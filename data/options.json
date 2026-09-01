@@ -1,0 +1,5248 @@
+{
+ "options": [
+  {
+   "name": "blitz_rendering_mode",
+   "choice_names": [
+    "0",
+    "1",
+    "11",
+    "2",
+    "12",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 0
+  },
+  {
+   "name": "enable_opacity_tex",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 1
+  },
+  {
+   "name": "texcoord_select_opacity",
+   "choice_names": [
+    "0",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 2
+  },
+  {
+   "name": "camera_xlu_type",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "13"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 3
+  },
+  {
+   "name": "is_use_dither_manual_alpha",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 4
+  },
+  {
+   "name": "camera_xlu_dither_type",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 5
+  },
+  {
+   "name": "gsys_enable_color_buffer",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 6
+  },
+  {
+   "name": "blitz_refract_type",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 7
+  },
+  {
+   "name": "is_mul_base_alpha_to_xluzpp_glass",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 8
+  },
+  {
+   "name": "enable_refract_depth_fog",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 9
+  },
+  {
+   "name": "enable_refract_distance_opa",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 10
+  },
+  {
+   "name": "enable_refract_caustics",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 11
+  },
+  {
+   "name": "enable_thick_glass",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 12
+  },
+  {
+   "name": "enable_model_dither_normal",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 13
+  },
+  {
+   "name": "enable_model_dither_overlap",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 14
+  },
+  {
+   "name": "model_dither_overlap_mode",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 15
+  },
+  {
+   "name": "blitz_inv_norm_backface",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 16
+  },
+  {
+   "name": "enable_albedo_tex",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 17
+  },
+  {
+   "name": "vertex_color",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 18
+  },
+  {
+   "name": "texcoord_select_albedo",
+   "choice_names": [
+    "0",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 19
+  },
+  {
+   "name": "team_color_map_type",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 20
+  },
+  {
+   "name": "texcoord_select_teamcolormap",
+   "choice_names": [
+    "0",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 21
+  },
+  {
+   "name": "my_team_color_type",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "10",
+    "8",
+    "20",
+    "21",
+    "22",
+    "30",
+    "31",
+    "32",
+    "40",
+    "41",
+    "42"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 22
+  },
+  {
+   "name": "disable_hue_peak_offset",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 23
+  },
+  {
+   "name": "enable_normal_map",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 24
+  },
+  {
+   "name": "gsys_normalmap_BC1",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 25
+  },
+  {
+   "name": "texcoord_select_normal",
+   "choice_names": [
+    "0",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 26
+  },
+  {
+   "name": "enable_multi_normal_map",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 27
+  },
+  {
+   "name": "enable_projuv_mirror_tangent",
+   "choice_names": [
+    "0",
+    "1",
+    "2"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 28
+  },
+  {
+   "name": "enable_shading",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 29
+  },
+  {
+   "name": "shading_enable_face_type",
+   "choice_names": [
+    "0",
+    "1",
+    "2"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 30
+  },
+  {
+   "name": "enable_roughness_map",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 31
+  },
+  {
+   "name": "texcoord_select_rghmap",
+   "choice_names": [
+    "0",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 32
+  },
+  {
+   "name": "enable_roughness_offset",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 33
+  },
+  {
+   "name": "roughness_reverse",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 34
+  },
+  {
+   "name": "enable_metalness_map",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 35
+  },
+  {
+   "name": "texcoord_select_mtlmap",
+   "choice_names": [
+    "0",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 36
+  },
+  {
+   "name": "enable_fabric_noise_map",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 37
+  },
+  {
+   "name": "linear_roughness",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 38
+  },
+  {
+   "name": "use_bias_mip_envmap",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 39
+  },
+  {
+   "name": "enable_emission",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 40
+  },
+  {
+   "name": "emission_color_type",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "20",
+    "30",
+    "40"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 41
+  },
+  {
+   "name": "enable_emission_map",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 42
+  },
+  {
+   "name": "texcoord_select_emmmap",
+   "choice_names": [
+    "0",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 43
+  },
+  {
+   "name": "normalize_emission",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 44
+  },
+  {
+   "name": "enable_night_emission",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 45
+  },
+  {
+   "name": "enable_envmap_emission",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 46
+  },
+  {
+   "name": "disable_emission_in_envmap",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 47
+  },
+  {
+   "name": "enable_night_envmap_emission",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 48
+  },
+  {
+   "name": "enable_correction_in_envmap",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 49
+  },
+  {
+   "name": "enable_inner_light",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 50
+  },
+  {
+   "name": "enable_env_param_emission",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 51
+  },
+  {
+   "name": "enable_taransmission",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 52
+  },
+  {
+   "name": "transmission_mask",
+   "choice_names": [
+    "0",
+    "1",
+    "4",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 4,
+   "c6_option_index": 53
+  },
+  {
+   "name": "enable_edge_transmission",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 54
+  },
+  {
+   "name": "transmission_multi_color",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "20",
+    "30",
+    "40"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 55
+  },
+  {
+   "name": "enable_transmission_map",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 56
+  },
+  {
+   "name": "texcoord_select_trsmap",
+   "choice_names": [
+    "0",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 57
+  },
+  {
+   "name": "enable_thickness_map",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 58
+  },
+  {
+   "name": "restex_id_thickness_map",
+   "choice_names": [
+    "0",
+    "1",
+    "4"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 59
+  },
+  {
+   "name": "enable_transmission_attenu",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 60
+  },
+  {
+   "name": "enable_light_occlude_check",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 61
+  },
+  {
+   "name": "enable_graffiti_blend",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 63
+  },
+  {
+   "name": "enable_shadow_shadow_pre_pass",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 64
+  },
+  {
+   "name": "enable_static_depth_shadow",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 65
+  },
+  {
+   "name": "enable_dynamic_depth_shadow",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 66
+  },
+  {
+   "name": "enable_projection_shadow",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 67
+  },
+  {
+   "name": "enable_depth_shadow_4_pcf",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 68
+  },
+  {
+   "name": "shadow_all_by_vertex_color_r",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 69
+  },
+  {
+   "name": "force_depth_shadow",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 70
+  },
+  {
+   "name": "enable_ao",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 71
+  },
+  {
+   "name": "texcoord_select_ao",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 72
+  },
+  {
+   "name": "enable_bake_shadow",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 73
+  },
+  {
+   "name": "bake_shadow_type",
+   "choice_names": [
+    "-1",
+    "0",
+    "1",
+    "2"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 74
+  },
+  {
+   "name": "bake_light_type",
+   "choice_names": [
+    "-1",
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 75
+  },
+  {
+   "name": "ignore_shapes_with_no_bake_uv",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 76
+  },
+  {
+   "name": "blitz_paint_type",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "5",
+    "4"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 77
+  },
+  {
+   "name": "enable_visible_ink_opa",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 78
+  },
+  {
+   "name": "paint_enable_face_type",
+   "choice_names": [
+    "0",
+    "1",
+    "2"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 79
+  },
+  {
+   "name": "enable_overlay_paint_on_emission",
+   "choice_names": [
+    "0",
+    "1",
+    "2"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 80
+  },
+  {
+   "name": "enable_nopaint_invisible",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 81
+  },
+  {
+   "name": "ink_visible_transparent_face_type",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 82
+  },
+  {
+   "name": "blitz_obj_paint_type",
+   "choice_names": [
+    "0",
+    "4",
+    "5",
+    "6",
+    "1",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 83
+  },
+  {
+   "name": "comp_paint_type",
+   "choice_names": [
+    "0",
+    "1",
+    "4",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 3,
+   "c6_option_index": 84
+  },
+  {
+   "name": "texcoord_select_comppaint",
+   "choice_names": [
+    "0",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 85
+  },
+  {
+   "name": "enable_private_paint_thickness",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 86
+  },
+  {
+   "name": "enable_ink_sheet",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 87
+  },
+  {
+   "name": "enable_paint_dynamic_display",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 88
+  },
+  {
+   "name": "blitz_map_paint",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 89
+  },
+  {
+   "name": "enable_kebaink_marble",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 90
+  },
+  {
+   "name": "kebaink_noise_pos_type",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 91
+  },
+  {
+   "name": "restex_id_kebaink_marble",
+   "choice_names": [
+    "0",
+    "1",
+    "4",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 92
+  },
+  {
+   "name": "marble_normal_type",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 93
+  },
+  {
+   "name": "kebaink_decay_type",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 94
+  },
+  {
+   "name": "kebaink_wave_type",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 95
+  },
+  {
+   "name": "special_ink_type_limitation",
+   "choice_names": [
+    "0",
+    "2",
+    "10"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 96
+  },
+  {
+   "name": "special_ink_plaza_sand_force_colorful",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 97
+  },
+  {
+   "name": "enable_paint_mask",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 98
+  },
+  {
+   "name": "restex_id_paint_mask",
+   "choice_names": [
+    "0",
+    "1",
+    "2"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 99
+  },
+  {
+   "name": "paint_mask_is_inv",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 100
+  },
+  {
+   "name": "enable_comp_paint_uv_random",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 101
+  },
+  {
+   "name": "enable_sfxmask",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 102
+  },
+  {
+   "name": "texcoord_select_sfxmask",
+   "choice_names": [
+    "0",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 103
+  },
+  {
+   "name": "enable_cheap_sss",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 104
+  },
+  {
+   "name": "enable_fabric_shading",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 105
+  },
+  {
+   "name": "fabric_facing_type",
+   "choice_names": [
+    "0",
+    "1",
+    "3",
+    "2"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 106
+  },
+  {
+   "name": "inv_fabric_facing",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 107
+  },
+  {
+   "name": "enable_manual_fresnel",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 108
+  },
+  {
+   "name": "fresnel_multi_color",
+   "choice_names": [
+    "0",
+    "1",
+    "2"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 109
+  },
+  {
+   "name": "enable_manual_fresnel_map",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 110
+  },
+  {
+   "name": "enable_transfilm",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 111
+  },
+  {
+   "name": "transfilm_type",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 112
+  },
+  {
+   "name": "under_film_multicolor",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "20",
+    "30",
+    "40"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 113
+  },
+  {
+   "name": "enable_edge_light",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 114
+  },
+  {
+   "name": "edge_light_base_color_type",
+   "choice_names": [
+    "0",
+    "1",
+    "2"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 115
+  },
+  {
+   "name": "enable_edge_irradiance_map",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 116
+  },
+  {
+   "name": "enable_edge_main_light",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 117
+  },
+  {
+   "name": "enable_tex_indirect",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 118
+  },
+  {
+   "name": "indirect_tex",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 119
+  },
+  {
+   "name": "enable_specular_glaze",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 120
+  },
+  {
+   "name": "enable_scene_specular_mask",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 121
+  },
+  {
+   "name": "enable_gambit_compati",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 122
+  },
+  {
+   "name": "enable_specular_mask",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 123
+  },
+  {
+   "name": "enable_planer_reflection",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 124
+  },
+  {
+   "name": "enable_reflector",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 125
+  },
+  {
+   "name": "reflector_type",
+   "choice_names": [
+    "3",
+    "4",
+    "1",
+    "0",
+    "2"
+   ],
+   "default_choice_idx": 3,
+   "c6_option_index": 126
+  },
+  {
+   "name": "enable_metal_flakes",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 127
+  },
+  {
+   "name": "restex_id_flakes_map",
+   "choice_names": [
+    "0",
+    "1",
+    "4"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 128
+  },
+  {
+   "name": "metal_flakes_type",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 129
+  },
+  {
+   "name": "enable_metal_flakes_rare",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 130
+  },
+  {
+   "name": "enable_emission_mixer",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 131
+  },
+  {
+   "name": "enable_mixer_albedo_attenuation",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 132
+  },
+  {
+   "name": "enable_mirroring",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 133
+  },
+  {
+   "name": "enable_aniso_specular",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 134
+  },
+  {
+   "name": "miiverse_uv_index",
+   "choice_names": [
+    "0",
+    "1",
+    "2"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 135
+  },
+  {
+   "name": "enable_decal_depth",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 136
+  },
+  {
+   "name": "enable_vtx_deform",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 137
+  },
+  {
+   "name": "enable_monochrome_filter",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 138
+  },
+  {
+   "name": "enable_phantom_filter",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 139
+  },
+  {
+   "name": "blitz_enable_parallax_map",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 140
+  },
+  {
+   "name": "restex_id_parallax_height_map",
+   "choice_names": [
+    "0",
+    "1",
+    "4",
+    "2"
+   ],
+   "default_choice_idx": 3,
+   "c6_option_index": 141
+  },
+  {
+   "name": "parallax_target",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "4",
+    "3",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "11",
+    "2"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 142
+  },
+  {
+   "name": "blitz_debug_disable_parallax_teamcolor",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 143
+  },
+  {
+   "name": "blitz_enable_parallax_height_darken",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 144
+  },
+  {
+   "name": "blitz_enable_parallax_height_darken_trans",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 145
+  },
+  {
+   "name": "parallax_target_enable_albedo",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 146
+  },
+  {
+   "name": "parallax_target_enable_normal",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 147
+  },
+  {
+   "name": "parallax_target_enable_emission",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 148
+  },
+  {
+   "name": "parallax_target_enable_trans",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 149
+  },
+  {
+   "name": "parallax_target_enable_roughness",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 150
+  },
+  {
+   "name": "parallax_target_enable_res0",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 151
+  },
+  {
+   "name": "parallax_target_enable_res1",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 152
+  },
+  {
+   "name": "parallax_target_enable_res2",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 153
+  },
+  {
+   "name": "blitz_enable_parallax_occlusion_map",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 154
+  },
+  {
+   "name": "restex_id_parallax_occlusion_height_map",
+   "choice_names": [
+    "0",
+    "1",
+    "4"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 155
+  },
+  {
+   "name": "blitz_parallax_occlusion_target",
+   "choice_names": [
+    "0",
+    "1",
+    "4",
+    "3",
+    "5",
+    "6",
+    "2"
+   ],
+   "default_choice_idx": 6,
+   "c6_option_index": 156
+  },
+  {
+   "name": "blitz_enable_parallax_occlusion_height_darken",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 157
+  },
+  {
+   "name": "blitz_parallax_occlusion_sample_num",
+   "choice_names": [
+    "4",
+    "8",
+    "12",
+    "16",
+    "20",
+    "24",
+    "28",
+    "32"
+   ],
+   "default_choice_idx": 3,
+   "c6_option_index": 158
+  },
+  {
+   "name": "blitz_enable_parallax_fur",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 159
+  },
+  {
+   "name": "blitz_enable_fur_dilate_type",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 160
+  },
+  {
+   "name": "enable_discard_1st_pass",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 161
+  },
+  {
+   "name": "enable_edge_fur_dilate",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 162
+  },
+  {
+   "name": "blitz_enable_parallax_fur_fin",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 163
+  },
+  {
+   "name": "blitz_parallax_fur_fin_type",
+   "choice_names": [
+    "0",
+    "1",
+    "4",
+    "2"
+   ],
+   "default_choice_idx": 3,
+   "c6_option_index": 164
+  },
+  {
+   "name": "blitz_enable_parallax_fur_lod",
+   "choice_names": [
+    "0",
+    "1",
+    "2"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 165
+  },
+  {
+   "name": "enable_fur_fin",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 166
+  },
+  {
+   "name": "fur_fin_cull",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 167
+  },
+  {
+   "name": "fur_fin_normalize_density",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 168
+  },
+  {
+   "name": "fur_fin_integer_density",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 169
+  },
+  {
+   "name": "fur_fin_length_mask_vertex_color",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 170
+  },
+  {
+   "name": "enable_fur_shell",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 171
+  },
+  {
+   "name": "fur_shell_cull",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 172
+  },
+  {
+   "name": "fur_shell_num",
+   "choice_names": [
+    "1",
+    "2",
+    "3",
+    "4",
+    "5"
+   ],
+   "default_choice_idx": 4,
+   "c6_option_index": 173
+  },
+  {
+   "name": "fur_shell_is_smooth_sharp",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 174
+  },
+  {
+   "name": "blitz_enable_interior_map",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 175
+  },
+  {
+   "name": "restex_id_interior_map",
+   "choice_names": [
+    "0",
+    "1",
+    "4",
+    "2"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 176
+  },
+  {
+   "name": "restex_id_interior_mask",
+   "choice_names": [
+    "0",
+    "1",
+    "4",
+    "2"
+   ],
+   "default_choice_idx": 3,
+   "c6_option_index": 177
+  },
+  {
+   "name": "blitz_interior_map_variation",
+   "choice_names": [
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 178
+  },
+  {
+   "name": "blitz_interior_mask_variation",
+   "choice_names": [
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 179
+  },
+  {
+   "name": "blitz_interior_front_variation",
+   "choice_names": [
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 180
+  },
+  {
+   "name": "interior_front_edge_correction",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 181
+  },
+  {
+   "name": "blitz_debug_interior_map_variation_idx",
+   "choice_names": [
+    "-1",
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 182
+  },
+  {
+   "name": "blitz_debug_interior_mask_variation_idx",
+   "choice_names": [
+    "-1",
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 183
+  },
+  {
+   "name": "enable_vat",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 184
+  },
+  {
+   "name": "vat_type",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 185
+  },
+  {
+   "name": "enable_vat_decode_normal_old",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 186
+  },
+  {
+   "name": "enable_vat_bone_anim_offset",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 187
+  },
+  {
+   "name": "enable_delete_fragment",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 188
+  },
+  {
+   "name": "enable_vat_after_shadergraph",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 189
+  },
+  {
+   "name": "vat_softbody_uv_type",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 190
+  },
+  {
+   "name": "blitz_map_height",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 191
+  },
+  {
+   "name": "is_graffiti",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 192
+  },
+  {
+   "name": "graffiti_type",
+   "choice_names": [
+    "0",
+    "1",
+    "2"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 193
+  },
+  {
+   "name": "is_enable_transparent_graffiti",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 194
+  },
+  {
+   "name": "is_enable_mantaking_shadow",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 195
+  },
+  {
+   "name": "mantaking_shadow_tex_index",
+   "choice_names": [
+    "0",
+    "1",
+    "4"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 196
+  },
+  {
+   "name": "is_mantaking_child",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 197
+  },
+  {
+   "name": "is_enable_model_hologram",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 198
+  },
+  {
+   "name": "is_use_camera_xlu_xlu_zprepass",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 199
+  },
+  {
+   "name": "is_enable_camera_xlu_visible_control",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 200
+  },
+  {
+   "name": "is_camera_xlu_use_overlook_alpha",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 201
+  },
+  {
+   "name": "is_camera_xlu_draw_bottom",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 202
+  },
+  {
+   "name": "is_camera_xlu_custom_use_near_alpha",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 203
+  },
+  {
+   "name": "is_overlook_xlu_only_below_camera",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 204
+  },
+  {
+   "name": "is_use_actor_posture",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 205
+  },
+  {
+   "name": "is_enable_ink_gi",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 206
+  },
+  {
+   "name": "is_enable_field_lame",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 207
+  },
+  {
+   "name": "is_search_light_shadow_caster",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 208
+  },
+  {
+   "name": "is_dismiss_search_light",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 209
+  },
+  {
+   "name": "is_enable_box_reflection",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 210
+  },
+  {
+   "name": "box_reflection_face_index",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 211
+  },
+  {
+   "name": "enable_barycentric_coordinate",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 212
+  },
+  {
+   "name": "enable_barycentric_coordinate_for_quad",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 213
+  },
+  {
+   "name": "enable_bone_spheremap",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 214
+  },
+  {
+   "name": "bone_spheremap_type",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 215
+  },
+  {
+   "name": "pixel_expression0",
+   "choice_names": [
+    "0",
+    "2646873009",
+    "2962433788",
+    "1574192619",
+    "1736323198",
+    "3063178799",
+    "2380872694",
+    "628916305",
+    "1321466455",
+    "3098686621",
+    "3987952486",
+    "3943548661",
+    "2482808289",
+    "4267363686",
+    "3437335778",
+    "3922471078",
+    "1777840760",
+    "1227784015",
+    "2924632611",
+    "1540711007",
+    "4159757216",
+    "1439811648",
+    "3477987059",
+    "2240018270",
+    "1210290011",
+    "3500216629",
+    "2341670650",
+    "4014596544",
+    "4262964565",
+    "2569259164",
+    "164003697",
+    "2199339438",
+    "1497347962",
+    "674842683",
+    "1020426282",
+    "2839701362",
+    "125313750",
+    "1458383063",
+    "1874663857",
+    "656204845",
+    "2365701451",
+    "1326748850",
+    "3224742766",
+    "3376139641",
+    "2208988364",
+    "1021949851",
+    "531681716",
+    "3841740493",
+    "1582880614",
+    "1020916165",
+    "489915838",
+    "3618775514",
+    "3194249948",
+    "3709692747",
+    "1456775849",
+    "3037035123",
+    "2444985430",
+    "3754407011",
+    "4264539405",
+    "4113204424",
+    "2820706048",
+    "3477210139",
+    "2551480139",
+    "316097434",
+    "2061425897",
+    "3760876100",
+    "3866262241",
+    "28976794",
+    "3066726299",
+    "673050976",
+    "1091819962",
+    "211619493",
+    "938218800",
+    "1150478694",
+    "574409248",
+    "3469715783",
+    "2786611138",
+    "2210970107",
+    "2218139787",
+    "1943953951",
+    "3138423286",
+    "2533664096",
+    "503282376",
+    "3580397328",
+    "1335951594",
+    "332515181",
+    "205924571",
+    "2257196246",
+    "3640706707",
+    "3728495195",
+    "2758647469",
+    "43756923",
+    "1175909861",
+    "1990463720",
+    "165982590",
+    "257523509",
+    "1924187449",
+    "2934867856",
+    "3326451298",
+    "4260312066",
+    "1105062502",
+    "1398042162",
+    "708028200",
+    "2175221334",
+    "2871252891",
+    "2272914163",
+    "3950309706",
+    "3871196795",
+    "2176026021",
+    "2280718972",
+    "1157455445",
+    "3285042579",
+    "217344927",
+    "4101728317",
+    "2545949353",
+    "623142038",
+    "1054229498",
+    "619260095",
+    "3245058885",
+    "4254922456",
+    "3530484442",
+    "3892404033",
+    "4005568177",
+    "1646959041",
+    "3343822331",
+    "1736037285",
+    "1272058034",
+    "3765182712",
+    "879360031",
+    "3852391297",
+    "1346776490",
+    "4247320851",
+    "3512885390",
+    "3241286520",
+    "2679771004",
+    "3481460785",
+    "1011550769",
+    "1614574893",
+    "844461014",
+    "2363376945",
+    "1717080330",
+    "1620002415",
+    "626833597",
+    "432804926",
+    "736855440",
+    "850226683",
+    "2497979613",
+    "1431938791",
+    "3887478785"
+   ],
+   "default_choice_idx": 0
+  },
+  {
+   "name": "vertex_expression0",
+   "choice_names": [
+    "0",
+    "3754316256",
+    "2674790877",
+    "3622124906",
+    "1384757725",
+    "2732688655",
+    "3320801300",
+    "95542299",
+    "1985473853",
+    "3753543295",
+    "2560010401",
+    "1046410423",
+    "4268854993",
+    "3171991090",
+    "2553154244",
+    "665411856",
+    "3265337765",
+    "1971749125",
+    "2537176498",
+    "997451290",
+    "3909733007",
+    "3291653804",
+    "2084240537",
+    "696410300",
+    "1615953121",
+    "567365633",
+    "1153462063",
+    "139191428",
+    "602647434",
+    "2314509062",
+    "3117901066",
+    "2592058854",
+    "2424224499",
+    "3696351009",
+    "3438750320",
+    "1787091481",
+    "1873078410",
+    "3586582657",
+    "1821021456",
+    "1315154857",
+    "3303051558",
+    "572634360",
+    "3890018906",
+    "3381559648",
+    "969075737",
+    "944099265",
+    "1795974382",
+    "3557211381",
+    "2344205118",
+    "194588351",
+    "431115152",
+    "2473853501",
+    "290207399",
+    "3520574750",
+    "2142461477",
+    "3528863077",
+    "1359173328",
+    "2779113452",
+    "1905490972",
+    "1452160548",
+    "1395189390",
+    "2071600713",
+    "2021886604",
+    "211478047",
+    "2155193967",
+    "4199339126",
+    "3630540955"
+   ],
+   "default_choice_idx": 0
+  },
+  {
+   "name": "enable_calc_color0",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 216
+  },
+  {
+   "name": "blitz_calc_color0_replace_color",
+   "choice_names": [
+    "100",
+    "0",
+    "2",
+    "8",
+    "3",
+    "1",
+    "9",
+    "7",
+    "4",
+    "5",
+    "6",
+    "10",
+    "11"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 217
+  },
+  {
+   "name": "blitz_calc_color0_calc_type",
+   "choice_names": [
+    "0",
+    "1",
+    "17",
+    "10",
+    "19",
+    "5",
+    "16",
+    "18",
+    "20",
+    "2",
+    "8",
+    "22",
+    "6",
+    "9",
+    "25",
+    "11",
+    "21",
+    "4",
+    "24",
+    "15",
+    "12",
+    "7",
+    "23",
+    "13",
+    "14",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 218
+  },
+  {
+   "name": "blitz_calc_color0_clamp01",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 219
+  },
+  {
+   "name": "blitz_calc_color0_A",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 220
+  },
+  {
+   "name": "blitz_calc_color0_A_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 221
+  },
+  {
+   "name": "blitz_calc_color0_B",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 222
+  },
+  {
+   "name": "blitz_calc_color0_B_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 223
+  },
+  {
+   "name": "blitz_calc_color0_C",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 224
+  },
+  {
+   "name": "blitz_calc_color0_C_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 225
+  },
+  {
+   "name": "blitz_calc_color0_D",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 226
+  },
+  {
+   "name": "blitz_calc_color0_D_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 227
+  },
+  {
+   "name": "enable_calc_color1",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 228
+  },
+  {
+   "name": "blitz_calc_color1_replace_color",
+   "choice_names": [
+    "100",
+    "0",
+    "2",
+    "8",
+    "3",
+    "1",
+    "9",
+    "7",
+    "4",
+    "5",
+    "6",
+    "10",
+    "11"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 229
+  },
+  {
+   "name": "blitz_calc_color1_calc_type",
+   "choice_names": [
+    "0",
+    "1",
+    "17",
+    "10",
+    "19",
+    "5",
+    "16",
+    "18",
+    "20",
+    "2",
+    "8",
+    "22",
+    "6",
+    "9",
+    "25",
+    "11",
+    "21",
+    "4",
+    "24",
+    "15",
+    "12",
+    "7",
+    "23",
+    "13",
+    "14",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 230
+  },
+  {
+   "name": "blitz_calc_color1_clamp01",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 231
+  },
+  {
+   "name": "blitz_calc_color1_A",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 232
+  },
+  {
+   "name": "blitz_calc_color1_A_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 233
+  },
+  {
+   "name": "blitz_calc_color1_B",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 234
+  },
+  {
+   "name": "blitz_calc_color1_B_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 235
+  },
+  {
+   "name": "blitz_calc_color1_C",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 236
+  },
+  {
+   "name": "blitz_calc_color1_C_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 237
+  },
+  {
+   "name": "blitz_calc_color1_D",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 238
+  },
+  {
+   "name": "blitz_calc_color1_D_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 239
+  },
+  {
+   "name": "enable_calc_color2",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 240
+  },
+  {
+   "name": "blitz_calc_color2_replace_color",
+   "choice_names": [
+    "100",
+    "0",
+    "2",
+    "8",
+    "3",
+    "1",
+    "9",
+    "7",
+    "4",
+    "5",
+    "6",
+    "10",
+    "11"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 241
+  },
+  {
+   "name": "blitz_calc_color2_calc_type",
+   "choice_names": [
+    "0",
+    "1",
+    "17",
+    "10",
+    "19",
+    "5",
+    "16",
+    "18",
+    "20",
+    "2",
+    "8",
+    "22",
+    "6",
+    "9",
+    "25",
+    "11",
+    "21",
+    "4",
+    "24",
+    "15",
+    "12",
+    "7",
+    "23",
+    "13",
+    "14",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 242
+  },
+  {
+   "name": "blitz_calc_color2_clamp01",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 243
+  },
+  {
+   "name": "blitz_calc_color2_A",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 244
+  },
+  {
+   "name": "blitz_calc_color2_A_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 245
+  },
+  {
+   "name": "blitz_calc_color2_B",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 246
+  },
+  {
+   "name": "blitz_calc_color2_B_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 247
+  },
+  {
+   "name": "blitz_calc_color2_C",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 248
+  },
+  {
+   "name": "blitz_calc_color2_C_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 249
+  },
+  {
+   "name": "blitz_calc_color2_D",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 250
+  },
+  {
+   "name": "blitz_calc_color2_D_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 251
+  },
+  {
+   "name": "enable_calc_color3",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 252
+  },
+  {
+   "name": "blitz_calc_color3_replace_color",
+   "choice_names": [
+    "100",
+    "0",
+    "2",
+    "8",
+    "3",
+    "1",
+    "9",
+    "7",
+    "4",
+    "5",
+    "6",
+    "10",
+    "11"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 253
+  },
+  {
+   "name": "blitz_calc_color3_calc_type",
+   "choice_names": [
+    "0",
+    "1",
+    "17",
+    "10",
+    "19",
+    "5",
+    "16",
+    "18",
+    "20",
+    "2",
+    "8",
+    "22",
+    "6",
+    "9",
+    "25",
+    "11",
+    "21",
+    "4",
+    "24",
+    "15",
+    "12",
+    "7",
+    "23",
+    "13",
+    "14",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 254
+  },
+  {
+   "name": "blitz_calc_color3_clamp01",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 255
+  },
+  {
+   "name": "blitz_calc_color3_A",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 256
+  },
+  {
+   "name": "blitz_calc_color3_A_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 257
+  },
+  {
+   "name": "blitz_calc_color3_B",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 258
+  },
+  {
+   "name": "blitz_calc_color3_B_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 259
+  },
+  {
+   "name": "blitz_calc_color3_C",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 260
+  },
+  {
+   "name": "blitz_calc_color3_C_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 261
+  },
+  {
+   "name": "blitz_calc_color3_D",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 262
+  },
+  {
+   "name": "blitz_calc_color3_D_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 263
+  },
+  {
+   "name": "enable_calc_color4",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 264
+  },
+  {
+   "name": "blitz_calc_color4_replace_color",
+   "choice_names": [
+    "100",
+    "0",
+    "2",
+    "8",
+    "3",
+    "1",
+    "9",
+    "7",
+    "4",
+    "5",
+    "6",
+    "10",
+    "11"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 265
+  },
+  {
+   "name": "blitz_calc_color4_calc_type",
+   "choice_names": [
+    "0",
+    "1",
+    "17",
+    "10",
+    "19",
+    "5",
+    "16",
+    "18",
+    "20",
+    "2",
+    "8",
+    "22",
+    "6",
+    "9",
+    "25",
+    "11",
+    "21",
+    "4",
+    "24",
+    "15",
+    "12",
+    "7",
+    "23",
+    "13",
+    "14",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 266
+  },
+  {
+   "name": "blitz_calc_color4_clamp01",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 267
+  },
+  {
+   "name": "blitz_calc_color4_A",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 268
+  },
+  {
+   "name": "blitz_calc_color4_A_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 269
+  },
+  {
+   "name": "blitz_calc_color4_B",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 270
+  },
+  {
+   "name": "blitz_calc_color4_B_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 271
+  },
+  {
+   "name": "blitz_calc_color4_C",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 272
+  },
+  {
+   "name": "blitz_calc_color4_C_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 273
+  },
+  {
+   "name": "blitz_calc_color4_D",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "50",
+    "51",
+    "52",
+    "56",
+    "53",
+    "57",
+    "58",
+    "54",
+    "55",
+    "65",
+    "59",
+    "60",
+    "62",
+    "66",
+    "67",
+    "68",
+    "69",
+    "63",
+    "64",
+    "61",
+    "70",
+    "71",
+    "100",
+    "101",
+    "102",
+    "110",
+    "111",
+    "112",
+    "113",
+    "114",
+    "115",
+    "116",
+    "117",
+    "118",
+    "119",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "300",
+    "310",
+    "312",
+    "313"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 274
+  },
+  {
+   "name": "blitz_calc_color4_D_channel",
+   "choice_names": [
+    "0",
+    "1",
+    "10",
+    "11",
+    "20",
+    "21",
+    "30",
+    "31",
+    "40",
+    "41",
+    "1000",
+    "1001",
+    "2",
+    "3",
+    "12",
+    "13",
+    "22",
+    "23",
+    "32",
+    "33",
+    "42",
+    "43",
+    "1002",
+    "1003"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 275
+  },
+  {
+   "name": "texcoord_select_res0",
+   "choice_names": [
+    "0",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 276
+  },
+  {
+   "name": "is_tex0_3d",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 277
+  },
+  {
+   "name": "texcoord_select_res1",
+   "choice_names": [
+    "0",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 278
+  },
+  {
+   "name": "is_tex1_3d",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 279
+  },
+  {
+   "name": "texcoord_select_res2",
+   "choice_names": [
+    "0",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 280
+  },
+  {
+   "name": "is_tex2_3d",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 281
+  },
+  {
+   "name": "texcoord_calc_texcoord0",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "5",
+    "6",
+    "14",
+    "3",
+    "16",
+    "8",
+    "4",
+    "9",
+    "10",
+    "11",
+    "12",
+    "13",
+    "7",
+    "15"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 282
+  },
+  {
+   "name": "texcoord_calc_texcoord2",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "5",
+    "6",
+    "14",
+    "3",
+    "16",
+    "8",
+    "4",
+    "9",
+    "10",
+    "11",
+    "12",
+    "13",
+    "7",
+    "15"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 283
+  },
+  {
+   "name": "texcoord_calc_texcoord3",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "5",
+    "6",
+    "14",
+    "3",
+    "16",
+    "8",
+    "4",
+    "9",
+    "10",
+    "11",
+    "12",
+    "13",
+    "7",
+    "15"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 284
+  },
+  {
+   "name": "texcoord_aspect_mod_texcoord0",
+   "choice_names": [
+    "0",
+    "1",
+    "2"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 285
+  },
+  {
+   "name": "texcoord_aspect_mod_texcoord2",
+   "choice_names": [
+    "0",
+    "1",
+    "2"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 286
+  },
+  {
+   "name": "texcoord_aspect_mod_texcoord3",
+   "choice_names": [
+    "0",
+    "1",
+    "2"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 287
+  },
+  {
+   "name": "enable_udim",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 288
+  },
+  {
+   "name": "udim_calc_mode",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 289
+  },
+  {
+   "name": "is_enable_tex_repetition",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 290
+  },
+  {
+   "name": "is_enable_tex_repetition_rotate",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 291
+  },
+  {
+   "name": "gsys_renderstate",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 292
+  },
+  {
+   "name": "enable_fog_z",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 294
+  },
+  {
+   "name": "enable_fog_y",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 295
+  },
+  {
+   "name": "enable_fog_z_gain",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 296
+  },
+  {
+   "name": "enable_model_y_fog",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 297
+  },
+  {
+   "name": "enable_model_y_fog_up",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 298
+  },
+  {
+   "name": "enable_model_y_fog_down",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 299
+  },
+  {
+   "name": "enable_vert_alpha",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 300
+  },
+  {
+   "name": "enable_dynamic_vert_alpha",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 301
+  },
+  {
+   "name": "gsys_geometry_culling",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 302
+  },
+  {
+   "name": "gsys_display_face_type",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 303
+  },
+  {
+   "name": "gsys_geometry_depth_culling",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 304
+  },
+  {
+   "name": "enable_sphere_map_material",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 305
+  },
+  {
+   "name": "is_bone_spheremap_viewnormal",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 306
+  },
+  {
+   "name": "enable_instancing_random_comp_paint_uv",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 307
+  },
+  {
+   "name": "enable_instancing_skinning",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 308
+  },
+  {
+   "name": "enable_output_clamp",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 309
+  },
+  {
+   "name": "enable_diffuse",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 310
+  },
+  {
+   "name": "enable_irradiance_map",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 311
+  },
+  {
+   "name": "enable_specular",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 312
+  },
+  {
+   "name": "enable_specular_direct",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 313
+  },
+  {
+   "name": "debug_disable_lightmap",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 314
+  },
+  {
+   "name": "debug_use_cube_array",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 315
+  },
+  {
+   "name": "enable_bake_depth_shadow",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 316
+  },
+  {
+   "name": "enable_bake_ao",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 317
+  },
+  {
+   "name": "debug_output_alpha",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 318
+  },
+  {
+   "name": "enable_light_pre_pass",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 319
+  },
+  {
+   "name": "enable_ink_gi",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 320
+  },
+  {
+   "name": "use_heightmap_height",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 321
+  },
+  {
+   "name": "enable_dynamic_light",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 322
+  },
+  {
+   "name": "enable_polygonal_light",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 1,
+   "c6_option_index": 323
+  },
+  {
+   "name": "enable_transmission",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 324
+  },
+  {
+   "name": "gsys_alpha_test_enable",
+   "choice_names": [
+    "0",
+    "1"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 325
+  },
+  {
+   "name": "gsys_alpha_test_func",
+   "choice_names": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7"
+   ],
+   "default_choice_idx": 6,
+   "c6_option_index": 326
+  },
+  {
+   "name": "blitz_xlu_type",
+   "choice_names": [
+    "0",
+    "4",
+    "5",
+    "1",
+    "2",
+    "3",
+    "6"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 327
+  },
+  {
+   "name": "gsys_weight",
+   "choice_names": [
+    "-1",
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8"
+   ],
+   "default_choice_idx": 0
+  },
+  {
+   "name": "gsys_index_stream_format",
+   "choice_names": [
+    "0"
+   ],
+   "default_choice_idx": 0
+  },
+  {
+   "name": "is_graffiti_bake",
+   "choice_names": [
+    "0"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 62
+  },
+  {
+   "name": "gsys_assign_type",
+   "choice_names": [
+    "gsys_assign_material",
+    "gsys_assign_zonly",
+    "gsys_assign_visualize",
+    "gsys_assign_cubemap",
+    "gsys_assign_depth_silhouette",
+    "gsys_assign_dilate",
+    "gsys_assign_xlu_zprepass",
+    "gsys_assign_user1",
+    "gsys_assign_user2",
+    "gsys_assign_user3",
+    "gsys_assign_dynamic0",
+    "gsys_assign_dynamic1",
+    "gsys_assign_dynamic2",
+    "gsys_assign_dynamic3",
+    "gsys_assign_dynamic4"
+   ],
+   "default_choice_idx": 0
+  },
+  {
+   "name": "blitz_ink_type",
+   "choice_names": [
+    "0"
+   ],
+   "default_choice_idx": 0,
+   "c6_option_index": 293
+  },
+  {
+   "name": "system_id",
+   "choice_names": [
+    "0"
+   ],
+   "default_choice_idx": 0
+  }
+ ]
+}
