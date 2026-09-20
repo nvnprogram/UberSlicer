@@ -16,7 +16,7 @@
 #include <functional>
 
 #define UBERSPEC_STAMP_MAGIC 0x50534255u
-#define UBERSPEC_CODEGEN_VER 1u
+#define UBERSPEC_CODEGEN_VER 2u
 
 namespace ub {
 

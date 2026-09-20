@@ -19,10 +19,10 @@ long long g_exitfold_hit = 0, g_exitfold_miss = 0;
 
 bool g_copyprop = false;
 
-bool g_lmem_compact = false;
-bool g_lmem_promote = false;
+bool g_lmem_compact = true;
+bool g_lmem_promote = true;
 
-bool g_lmem_copyprop = false;
+bool g_lmem_copyprop = true;
 
 void phase_b(std::vector<u8> &bc, u32 co) {
     int n = uber_phase_b(bc.data(), co);

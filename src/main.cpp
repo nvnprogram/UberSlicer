@@ -1,4 +1,5 @@
 
+#include <exception>
 #include <numeric>
 #include "emit.h"
 #include "nv_sched_ctl.h"
@@ -469,86 +470,60 @@ static void compose_cp(DataSet &D, bool fragment, const std::string &uber_key,
 
 int g_lm_pick_promote = 0, g_lm_pick_compact = 0, g_lm_pick_off = 0;
 int g_lm_pick_cp = 0;
-bool g_lmem_cp_force = false;
 
-bool g_lmem_force = false;
+static bool cheaper(const Composed &a, const Composed &b) {
+    u32 ca = const_off(a.ct), cb = const_off(b.ct);
+    int ya = issue_cycles(a.bc, ca), yb = issue_cycles(b.bc, cb);
+    if (ya != yb) return ya < yb;
+    int wa = occupancy_of(a.rst.new_decl), wb = occupancy_of(b.rst.new_decl);
+    if (wa != wb) return wa > wb;
+    return a.facts.n_real < b.facts.n_real;
+}
 
 static void compose_lm(DataSet &D, bool fragment, const std::string &uber_key,
                     const std::vector<u32> &c6, const std::string &name,
                     Composed &out) {
     g_perf.n_compose_lm++;
-    bool want_p = g_lmem_promote, want_c = g_lmem_compact;
-    if ((!want_p && !want_c) || g_lmem_force) {
-        compose_cp(D, fragment, uber_key, c6, name, out);
-        return;
-    }
-    auto cycles_of = [](const Composed &c) {
-        u32 co = const_off(c.ct);
-        return issue_cycles(c.bc, co);
+    struct Rung { bool promote, compact; int *pick; };
+    static const Rung rungs[] = {
+        { true,  false, &g_lm_pick_promote },
+        { false, true,  &g_lm_pick_compact },
+        { false, false, &g_lm_pick_off     },
     };
-
-    g_lmem_promote = g_lmem_compact = false;
-    Composed base;
-    compose_cp(D, fragment, uber_key, c6, name, base);
-    int base_cyc = cycles_of(base);
-    int base_warps = occupancy_of(base.rst.new_decl);
-
-    std::vector<std::pair<bool, bool>> cands;
-    if (want_p) cands.push_back({true, false});
-    if (want_c) cands.push_back({false, true});
-
     bool want_cp = g_lmem_copyprop;
-    auto better = [](const Composed &a, const Composed &b) {
-        int wa = occupancy_of(a.rst.new_decl), wb = occupancy_of(b.rst.new_decl);
-        if (wa != wb) return wa > wb;
-        u32 ca, cb;
-        ca = const_off(a.ct);
-        cb = const_off(b.ct);
-        int ya = issue_cycles(a.bc, ca), yb = issue_cycles(b.bc, cb);
-        if (ya != yb) return ya < yb;
-        return a.facts.n_real < b.facts.n_real;
-    };
+    for (const Rung &r : rungs) {
+        g_lmem_promote = r.promote;
+        g_lmem_compact = r.compact;
 
-    for (auto &cd : cands) {
-        g_lmem_promote = cd.first;
-        g_lmem_compact = cd.second;
-        std::vector<char> cpvars;
-        if (cd.first && want_cp) {
-            cpvars.push_back(1);
-            if (!g_lmem_cp_force) cpvars.push_back(0);
-        }
-        else cpvars.push_back(0);
         Composed best;
         bool have = false, took_cp = false;
-        for (char v : cpvars) {
-            g_lmem_copyprop = v ? want_cp : false;
+        std::exception_ptr err;
+        for (int v = (r.promote && want_cp) ? 1 : 0; v >= 0; v--) {
+            g_lmem_copyprop = (v != 0);
             Composed c;
-            bool ok = true;
             try {
                 compose_cp(D, fragment, uber_key, c6, name, c);
-            } catch (const std::exception &) { ok = false; }
-            if (!ok) continue;
-            if (occupancy_of(c.rst.new_decl) < base_warps ||
-                cycles_of(c) > base_cyc) continue;
-            if (!have || better(c, best)) {
+            } catch (const std::exception &) {
+                if (!err) err = std::current_exception();
+                continue;
+            }
+            if (!have || cheaper(c, best)) {
                 best = std::move(c); have = true; took_cp = (v != 0);
             }
         }
         g_lmem_copyprop = want_cp;
-        if (have) {
-            if (cd.first) {
-                g_lm_pick_promote++;
-                if (took_cp) g_lm_pick_cp++;
-            } else g_lm_pick_compact++;
-            g_lmem_promote = want_p; g_lmem_compact = want_c;
-            out = std::move(best);
-            return;
+        if (!have) {
+
+            if (r.pick != &g_lm_pick_off) continue;
+            g_lmem_promote = g_lmem_compact = true;
+            std::rethrow_exception(err);
         }
+        (*r.pick)++;
+        if (took_cp) g_lm_pick_cp++;
+        g_lmem_promote = g_lmem_compact = true;
+        out = std::move(best);
+        return;
     }
-    g_lm_pick_off++;
-    g_lmem_promote = want_p; g_lmem_compact = want_c;
-    g_lmem_copyprop = want_cp;
-    out = std::move(base);
 }
 
 static int cycles_of_c(const Composed &c) {
@@ -903,9 +878,6 @@ static const ShipFlag g_ship_flags[] = {
     { "reorder",       &g_reorder,       true  },
     { "fill",          &g_fill,          true  },
     { "copyprop",      &g_copyprop,      true  },
-    { "lmem-promote",  &g_lmem_promote,  true  },
-    { "lmem-compact",  &g_lmem_compact,  true  },
-    { "lmem-copyprop", &g_lmem_copyprop, true  },
     { "rp-split",      &g_rp_split,      true  },
     { "rp-defrelax",   &g_rp_defrelax,   true  },
     { "idfold",        &g_idfold,        true  },
@@ -972,7 +944,6 @@ static int run(int argc, char **argv) {
         else if (a == "--option-bank") arg_bank = atoi(next().c_str());
         else if (a == "--option-bank-fragment") g_uber[1].bank = atoi(next().c_str());
         else if (a == "--option-bank-vertex") g_uber[0].bank = atoi(next().c_str());
-
 
 
 
