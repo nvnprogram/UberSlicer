@@ -96,6 +96,7 @@ static void check_operands(Ctx &C, int i, u64 q) {
     const EMap &env = R.env[(size_t)i];
     const VMap &vals = R.vals[(size_t)i];
     bool rw = !sp.norw[(size_t)i];
+    bool texop = sp.tex_rw[(size_t)i];
     int gp = -1;
     if (guard == TRI_T && !sp.nopred[(size_t)i] && sp.pnum[(size_t)i] != PT)
         gp = PREG + sp.pnum[(size_t)i];
@@ -128,14 +129,17 @@ static void check_operands(Ctx &C, int i, u64 q) {
             if (!tsrc.count(r)) continue;
         }
         const u32 *x = vmap_get(vals, r);
-        if (rw && x && *x == 0) continue;
+        if (rw && !texop && x && *x == 0) continue;
         int32_t a = r;
         if (rw) {
             auto it = env.find(r);
             if (it != env.end()) a = it->second;
         }
         if (a < 0) a = r;
-        if (a == RZ) continue;
+        if (a == RZ) {
+            if (!texop) continue;
+            a = r;
+        }
         want.insert(C.regmap(a, false, i));
     }
     want.erase(RZ);
@@ -249,16 +253,14 @@ static u64 rewrite(Ctx &C, int i, OptMap &optmap) {
             }
         }
     } else if (rw) {
+
         for (int o : {8, 20}) {
             int r = (int)((q >> o) & 0xFF);
             if (r == RZ) continue;
-            const u32 *x = vmap_get(v, r);
-            if (x && *x == 0) { q = set_field8(q, o, RZ); continue; }
             int32_t a = r;
             auto it = env.find(r);
             if (it != env.end()) a = it->second;
-            if (a < 0) a = r;
-            if (a == RZ) { q = set_field8(q, o, RZ); continue; }
+            if (a < 0 || a == RZ) a = r;
             q = set_field8(q, o, C.regmap(a, false, i));
         }
     }

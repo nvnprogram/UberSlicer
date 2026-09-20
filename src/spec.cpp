@@ -1626,6 +1626,7 @@ void Spec::dce_pass(RunRes &R) {
             R.kill[(size_t)i] = def_mask[(size_t)i];
         }
         bool rw = !norw[(size_t)i];
+        bool texop = tex_rw[(size_t)i];
         int cbslot = cbfold_slot(i, e);
         int cbreg = (cbslot >= 0) ? (int)((p->q[i] >> cbslot) & 0xFF) : -1;
         Mask m;
@@ -1645,13 +1646,17 @@ void Spec::dce_pass(RunRes &R) {
                 continue;
             }
             const u32 *x = vmap_get(v, r);
-            if (x && *x == 0 && rw) continue;
+            if (x && *x == 0 && rw && !texop) continue;
             int32_t a = r;
             if (rw) {
                 auto it = e.find(r);
                 if (it != e.end()) a = it->second;
             }
-            if (a == RZ) continue;
+            if (a == RZ) {
+
+                if (!texop) continue;
+                a = r;
+            }
             if (a < 0) {
 
                 if (r == cbreg) continue;

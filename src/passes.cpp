@@ -13,6 +13,50 @@ namespace ub {
 
 struct Field { int off, base, w; char kind; };
 
+void tex_src_widths(u64 q, int nm, int &nA, int &nB) {
+    static const int TEXS_SRC[14][2] = {
+        {1,0},{1,1},{1,1},{2,1},{2,1},{2,2},{2,1},{2,1},{2,1},{2,2},{2,1},
+        {2,1},{2,1},{2,2}};
+    const OpSets &T = S();
+    const char *s = op_name(nm);
+    nA = 0;
+    nB = 0;
+    if (T.texs_fam[(size_t)nm]) {
+        if (std::strncmp(s, "Tld4s", 5) == 0) { nA = 2; nB = 1; return; }
+        int tg = (int)((q >> 53) & 0xF);
+        if (std::strncmp(s, "Texs", 4) == 0) {
+            int k = tg < 13 ? tg : 13;
+            nA = TEXS_SRC[k][0];
+            nB = TEXS_SRC[k][1];
+            return;
+        }
+        switch (tg) {
+        case 0x0: nA = 1; nB = 0; break;
+        case 0x1: nA = 1; nB = 1; break;
+        case 0x2: nA = 1; nB = 1; break;
+        case 0x4: nA = 1; nB = 2; break;
+        case 0x5: nA = 2; nB = 1; break;
+        case 0x6: nA = 1; nB = 2; break;
+        case 0x7: nA = 2; nB = 1; break;
+        case 0x8: nA = 2; nB = 1; break;
+        case 0xc: nA = 2; nB = 2; break;
+        default:  nA = 2; nB = 2; break;
+        }
+        return;
+    }
+    if (!T.tex_fam[(size_t)nm]) return;
+    if (!std::strcmp(s, "Txq") || !std::strcmp(s, "TxqB")) { nA = 1; return; }
+    if (!std::strcmp(s, "Tmml") || !std::strcmp(s, "TmmlB")) { nA = 2; return; }
+    bool is_b = !std::strcmp(s, "TexB") || !std::strcmp(s, "TldB") ||
+                !std::strcmp(s, "Tld4B") || !std::strcmp(s, "TxdB");
+    static const int dim_coords[8] = {1, 2, 2, 3, 3, 3, 3, 4};
+    nA = dim_coords[(q >> 28) & 7];
+    if ((q >> 50) & 1) nA++;
+    int lod = (int)((is_b ? (q >> 37) : (q >> 55)) & 7);
+    if (lod == 2 || lod == 3) nA++;
+    nB = 1;
+}
+
 static void fieldmap(u64 q, int nm, unsigned pr, std::vector<Field> &out) {
     const OpSets &T = S();
     out.clear();
@@ -21,9 +65,6 @@ static void fieldmap(u64 q, int nm, unsigned pr, std::vector<Field> &out) {
     static const int TEXS_MASKLUT[2][8] = {
         {0x1, 0x2, 0x4, 0x8, 0x3, 0x9, 0xA, 0xC},
         {0x7, 0xB, 0xD, 0xE, 0xF, 0x0, 0x0, 0x0}};
-    static const int TEXS_SRC[14][2] = {
-        {1,0},{1,1},{1,1},{2,1},{2,1},{2,2},{2,1},{2,1},{2,1},{2,2},{2,1},
-        {2,1},{2,1},{2,2}};
     const char *s = op_name(nm);
     auto pc4 = [](int x) { int c = 0; while (x) { c += x & 1; x >>= 1; } return c; };
 
@@ -37,27 +78,7 @@ static void fieldmap(u64 q, int nm, unsigned pr, std::vector<Field> &out) {
         if (dest2 != RZ && w1) out.push_back({28, dest2, w1, 'd'});
         int srcA = (int)((q >> 8) & 0xFF), srcB = (int)((q >> 20) & 0xFF);
         int nA, nB;
-        if (t4s) { nA = 2; nB = 1; }
-        else {
-            int tg = (int)((q >> 53) & 0xF);
-            if (std::strncmp(s, "Texs", 4) == 0) {
-                int k = tg < 13 ? tg : 13;
-                nA = TEXS_SRC[k][0]; nB = TEXS_SRC[k][1];
-            } else {
-                switch (tg) {
-                case 0x0: nA = 1; nB = 0; break;
-                case 0x1: nA = 1; nB = 1; break;
-                case 0x2: nA = 1; nB = 1; break;
-                case 0x4: nA = 1; nB = 2; break;
-                case 0x5: nA = 2; nB = 1; break;
-                case 0x6: nA = 1; nB = 2; break;
-                case 0x7: nA = 2; nB = 1; break;
-                case 0x8: nA = 2; nB = 1; break;
-                case 0xc: nA = 2; nB = 2; break;
-                default:  nA = 2; nB = 2; break;
-                }
-            }
-        }
+        tex_src_widths(q, nm, nA, nB);
         if (srcA != RZ && nA) out.push_back({8, srcA, nA, 'u'});
         if (srcB != RZ && nB) out.push_back({20, srcB, nB, 'u'});
         return;
@@ -67,21 +88,11 @@ static void fieldmap(u64 q, int nm, unsigned pr, std::vector<Field> &out) {
         int dest = (int)(q & 0xFF), wm = (int)((q >> 31) & 0xF);
         int nd = pc4(wm);
         if (dest != RZ && nd) out.push_back({0, dest, nd, 'd'});
-        int srcA = (int)((q >> 8) & 0xFF), nA, srcB;
-        if (!std::strcmp(s, "Txq") || !std::strcmp(s, "TxqB")) { nA = 1; srcB = RZ; }
-        else if (!std::strcmp(s, "Tmml") || !std::strcmp(s, "TmmlB")) { nA = 2; srcB = RZ; }
-        else {
-            srcB = (int)((q >> 20) & 0xFF);
-            bool is_b = !std::strcmp(s, "TexB") || !std::strcmp(s, "TldB") ||
-                        !std::strcmp(s, "Tld4B") || !std::strcmp(s, "TxdB");
-            static const int dim_coords[8] = {1, 2, 2, 3, 3, 3, 3, 4};
-            nA = dim_coords[(q >> 28) & 7];
-            if ((q >> 50) & 1) nA++;
-            int lod = (int)((is_b ? (q >> 37) : (q >> 55)) & 7);
-            if (lod == 2 || lod == 3) nA++;
-        }
+        int srcA = (int)((q >> 8) & 0xFF), nA, nB;
+        tex_src_widths(q, nm, nA, nB);
+        int srcB = nB ? (int)((q >> 20) & 0xFF) : RZ;
         if (srcA != RZ) out.push_back({8, srcA, nA, 'u'});
-        if (srcB != RZ) out.push_back({20, srcB, 1, 'u'});
+        if (srcB != RZ) out.push_back({20, srcB, nB, 'u'});
         return;
     }
 
@@ -2747,6 +2758,10 @@ void control_rewrite(std::vector<u8> &bc, std::vector<u8> &ct, CtlFacts &f) {
     sph_set(sph, SPH_BITS_LOCAL_MEM_CRS_SZ, (u64)f.slm_crs);
 
     NVNshaderControl *c = ctl(ct);
+    c->debugBuildId[0] = UBERSPEC_STAMP_MAGIC;
+    c->debugBuildId[1] = UBERSPEC_CODEGEN_VER;
+    c->debugBuildId[2] = 0;
+    c->debugBuildId[3] = 0;
     c->mProgramRegNum = (u32)f.gpr_count;
     c->mPerWarpScratchSize = f.lmem_bytes;
     if (f.fragment) c->numColourResults = (u32)f.ncolor_outputs;
@@ -2986,6 +3001,29 @@ void verify(const std::vector<u8> &bc, const std::vector<u8> &ct, bool run_v8,
                           ")").c_str() : "",
                  uber_vote_floor_fail ? " (floor refused)" : "");
         R.add("V13 vote stall", bad13 == 0 && !uber_vote_floor_fail, buf);
+    }
+
+    {
+        int ntex = 0, bad14 = 0, firstbad = -1;
+        for (int i : real) {
+            int nm = p.op[i];
+            if (!T.tex_bases[(size_t)nm]) continue;
+            ntex++;
+            int nA = 0, nB = 0;
+            tex_src_widths(p.q[i], nm, nA, nB);
+
+            if (!T.texs_fam[(size_t)nm]) nB = 0;
+            bool hit = (nA && (int)((p.q[i] >> 8) & 0xFF) == RZ) ||
+                       (nB && (int)((p.q[i] >> 20) & 0xFF) == RZ);
+            if (hit) { bad14++; if (firstbad < 0) firstbad = i; }
+        }
+        std::string where = bad14 ? (" (first at slot " +
+                                     std::to_string(firstbad) + ")")
+                                  : std::string();
+        snprintf(buf, sizeof buf,
+                 "%d texture op(s), %d with an RZ coordinate source%s",
+                 ntex, bad14, where.c_str());
+        R.add("V14 tex operands", bad14 == 0, buf);
     }
 }
 

@@ -79,7 +79,8 @@ struct NVNshaderControl {
         } comp;
     };
 
-    uint8_t  pad1[0x91];
+    uint32_t debugBuildId[4];
+    uint8_t  pad1[0x81];
     uint8_t  numSamplerRefs;
     uint8_t  pad2[0xa];
     uint8_t  samplerUnitBindings[NVN_NUM_TEX_UNITS];
@@ -109,6 +110,7 @@ NVN_CTL_AT(post_depth_coverage, 0x719);
 NVN_CTL_AT(writesDepth, 0x71c);
 NVN_CTL_AT(numColourResults, 0x734);
 NVN_CTL_AT(frag.per_sample_invocation, 0x74a);
+NVN_CTL_AT(debugBuildId, 0x768);
 NVN_CTL_AT(numSamplerRefs, 0x7f9);
 NVN_CTL_AT(samplerUnitBindings, 0x804);
 #undef NVN_CTL_AT

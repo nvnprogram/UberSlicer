@@ -15,6 +15,9 @@
 #include <stdexcept>
 #include <functional>
 
+#define UBERSPEC_STAMP_MAGIC 0x50534255u
+#define UBERSPEC_CODEGEN_VER 1u
+
 namespace ub {
 
 typedef uint64_t u64;

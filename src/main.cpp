@@ -991,6 +991,11 @@ static int run(int argc, char **argv) {
     }
     if (!pos.empty()) cmd = pos[0];
 
+    if (cmd == "codegen") {
+        printf("%u\n", UBERSPEC_CODEGEN_VER);
+        return 0;
+    }
+
     for (const ShipFlag &f : g_ship_flags) *f.flag = true;
     if (g_pa_anti) uber_set_pa_anti(1);
 
