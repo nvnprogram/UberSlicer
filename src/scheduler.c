@@ -1,7 +1,18 @@
 
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdlib.h>
+#include <string.h>
 #include "nv_sched_ctl.h"
+
+void *ub_cmalloc(size_t n);
+void *ub_ccalloc(size_t a, size_t b);
+void *ub_crealloc(void *p, size_t n);
+void ub_cfree(void *p);
+#define malloc  ub_cmalloc
+#define calloc  ub_ccalloc
+#define realloc ub_crealloc
+#define free    ub_cfree
 
 int ub_sched_verbose = 0;
 
@@ -77,6 +88,7 @@ int uber_validate(unsigned char *bc, unsigned int constOff)
 }
 
 void uber_set_pa_anti(int v) { _pa_anti = v; }
+
 
 #define UBM_NONE   0
 #define UBM_LOCAL  1
@@ -193,16 +205,34 @@ static const int *_ub_wuse = 0, *_ub_wdef = 0;
 static int _ub_wstride = 0;
 static long long _ub_fe_seen[3], _ub_fe_false[3];
 
+static long long _ub_fe_cls[8];
+
+#define UB_WEB_SPLIT0 4096
+static long long _ub_fe_renames;
+
+#define UB_SOFT_CAP 65536
+static int _ub_soft_from[UB_SOFT_CAP], _ub_soft_to[UB_SOFT_CAP], _ub_soft_reg[UB_SOFT_CAP];
+static int _ub_soft_n;
+static long long _ub_fe_crossed, _ub_fe_crossed_edges;
+void ub_fe_crossed_get(long long *defs, long long *edges) { *defs = _ub_fe_crossed; *edges = _ub_fe_crossed_edges; }
+
 void ub_set_webs(const int *wuse, const int *wdef, int stride) {
     _ub_wuse = wuse; _ub_wdef = wdef; _ub_wstride = stride;
 }
 void ub_fe_reset(void) {
     int k; for (k = 0; k < 3; k++) { _ub_fe_seen[k] = 0; _ub_fe_false[k] = 0; }
+    for (k = 0; k < 8; k++) _ub_fe_cls[k] = 0;
+    _ub_fe_renames = 0;
+    _ub_fe_crossed = 0;
+    _ub_fe_crossed_edges = 0;
 }
 void ub_fe_get(long long *seen, long long *fals) {
     int k; for (k = 0; k < 3; k++) { seen[k] = _ub_fe_seen[k]; fals[k] = _ub_fe_false[k]; }
 }
 int _ub_nofalse = 0;
+
+void ub_fe_cls_get(long long *cls) { int k; for (k = 0; k < 8; k++) cls[k] = _ub_fe_cls[k]; }
+void ub_fe_renames_get(long long *v) { *v = _ub_fe_renames; }
 int _ub_docp = 1;
 static long long _ub_cp_all, _ub_cp_nofalse;
 void ub_cp_reset(void) { _ub_cp_all = 0; _ub_cp_nofalse = 0; }
@@ -252,6 +282,53 @@ static int ub_edge_false(const PBInst *blk, int base, int from, int to, int type
     return 0;
 }
 
+static int ub_edge_class(const PBInst *blk, int base, int from, int to, int type,
+                         int *rr)
+{
+    short ru[PB_MAX_USES];
+    int nru, k, j, cls = 0, best_r = -1;
+    const int *A, *B;
+    if (!_ub_wuse || !_ub_wdef) return 4;
+    if (type == PBD_FLOW) return 0;
+    if (type == PBD_ANTI) {
+        A = _ub_wuse + (size_t)(base + from) * _ub_wstride;
+        B = _ub_wdef + (size_t)(base + to)   * _ub_wstride;
+        nru = pb_real_uses(&blk[from], ru);
+        for (k = 0; k < nru; k++) {
+            int r = ru[k];
+            for (j = 0; j < blk[to].n_defs; j++) {
+                int c;
+                if (blk[to].defs[j] != r) continue;
+                if (r < 0 || r >= _ub_wstride) c = 2;
+                else if (A[r] < UB_WEB_SPLIT0 || B[r] < UB_WEB_SPLIT0)
+                    c = (blk[to].is_pred || blk[to].n_defs > 1) ? 3 : 7;
+                else if (A[r] == B[r]) c = blk[to].is_pred ? 5 : (blk[to].n_defs > 1 ? 6 : 4);
+                else c = 1;
+                if (c > cls) { cls = c; best_r = r; }
+            }
+        }
+        if (rr) *rr = best_r;
+        return cls;
+    }
+    A = _ub_wdef + (size_t)(base + from) * _ub_wstride;
+    B = _ub_wdef + (size_t)(base + to)   * _ub_wstride;
+    for (k = 0; k < blk[from].n_defs; k++) {
+        int r = blk[from].defs[k];
+        for (j = 0; j < blk[to].n_defs; j++) {
+            int c;
+            if (blk[to].defs[j] != r) continue;
+            if (r < 0 || r >= _ub_wstride) c = 2;
+            else if (A[r] < UB_WEB_SPLIT0 || B[r] < UB_WEB_SPLIT0)
+                c = (blk[to].is_pred || blk[to].n_defs > 1) ? 3 : 7;
+            else if (A[r] == B[r]) c = blk[to].is_pred ? 5 : (blk[to].n_defs > 1 ? 6 : 4);
+            else c = 1;
+            if (c > cls) { cls = c; best_r = r; }
+        }
+    }
+    if (rr) *rr = best_r;
+    return cls;
+}
+
 static long long ub_crit_path(const PBInst *blk, int m, const PBDepList *dep,
                               int base, int skip_false)
 {
@@ -277,10 +354,17 @@ static long long ub_crit_path(const PBInst *blk, int m, const PBDepList *dep,
     return best;
 }
 
+
+static void ub_fix_extra_du(PBInst *ip);
+static void ub_union_pred(PBInst *ip, unsigned char pdefs, unsigned char puses);
+
+
 static void ub_false_edges(const PBInst *blk, int m, PBDepList *dep, int base,
                            int drop)
 {
     int i, k, w;
+    u8 *renamed = (u8 *)calloc((size_t)(m > 0 ? m : 1), 1);
+    _ub_soft_n = 0;
     for (i = 0; i < m; i++) {
         w = 0;
         for (k = 0; k < dep[i].n; k++) {
@@ -290,10 +374,30 @@ static void ub_false_edges(const PBInst *blk, int m, PBDepList *dep, int base,
             bad = ub_edge_false(blk, base, i, to, ty);
             _ub_fe_seen[ty]++;
             if (bad) _ub_fe_false[ty]++;
+            if (ty != PBD_FLOW) {
+                int c = ub_edge_class(blk, base, i, to, ty, NULL);
+                _ub_fe_cls[c]++;
+
+                if (drop == 2 && (c == 1 || c == 2)) bad = 1;
+                if (drop == 3) bad = 1;
+                if (drop == 4 && (c == 1 || c == 4)) bad = 1;
+                if (drop == 5 && (c == 1 || c == 4 || c == 6)) bad = 1;
+                if (drop == 7 && (c == 1 || c == 4 || c == 7)) bad = 1;
+                if ((c == 4 || c == 6 || c == 7) && bad && renamed && !renamed[to]) {
+                    renamed[to] = 1;
+                    _ub_fe_renames++;
+                }
+                if ((c == 4 || c == 6 || c == 7) && bad && _ub_soft_n < UB_SOFT_CAP) {
+                    _ub_soft_from[_ub_soft_n] = i;
+                    _ub_soft_to[_ub_soft_n] = to;
+                    _ub_soft_n++;
+                }
+            }
             if (drop && !bad) dep[i].d[w++] = dep[i].d[k];
         }
         if (drop) dep[i].n = w;
     }
+    free(renamed);
 }
 
 int ub_inst_class(const unsigned char *bc, unsigned int constOff, int nreal,
@@ -778,6 +882,21 @@ int uber_phase_a(const unsigned char *bc, unsigned int constOff, int nreal,
         for (i = 0; i < m; i++) if (si[i].isTex) B.numTexRemaining++;
         nout = pa_schedule_block(&B, out);
         ok = (nout == m);
+        if (ok && _ub_wuse && _ub_nofalse >= 4 && _ub_soft_n > 0) {
+            int *pos = (int *)pa_calloc(&ar, sizeof(int) * (size_t)m);
+            u8 *hit = (u8 *)pa_calloc(&ar, (size_t)m);
+            int e;
+            if (pos && hit) {
+                for (i = 0; i < m; i++) pos[out[i]] = i;
+                for (e = 0; e < _ub_soft_n; e++) {
+                    int f = _ub_soft_from[e], t = _ub_soft_to[e];
+                    if (pos[t] < pos[f]) {
+                        _ub_fe_crossed_edges++;
+                        if (!hit[t]) { hit[t] = 1; _ub_fe_crossed++; }
+                    }
+                }
+            }
+        }
         if (ok) {
             int *seen = (int *)pa_calloc(&ar, sizeof(int) * (size_t)m);
             if (!seen) ok = 0;
@@ -796,6 +915,123 @@ int uber_phase_a(const unsigned char *bc, unsigned int constOff, int nreal,
     pa_arena_free(&ar);
     free(bbs); free(insts);
     return moved;
+}
+
+int ub_anticopy_probe(const unsigned char *bc, unsigned int constOff, int nreal,
+                      int memdeps, const unsigned char *pdefs,
+                      const unsigned char *puses, int *o_slot, int *o_reg,
+                      int *o_bs, int *o_be, int *o_cnt, int maxo)
+{
+    int n = 0, nbb = 0, bi, i, maxn = 0, nout = 0;
+    PBInst *insts;
+    PBBlock *bbs;
+    PAArena ar;
+    if (!_ub_wuse || !_ub_wdef) return -1;
+    insts = pb_build((const u8 *)bc, constOff, &n);
+    if (!insts) return -1;
+    bbs = pb_basic_blocks(insts, n, &nbb);
+    if (!bbs) { free(insts); return -1; }
+    for (bi = 0; bi < nbb; bi++) {
+        int m = bbs[bi].end - bbs[bi].start;
+        if (m > maxn) maxn = m;
+    }
+    if (!pa_arena_init(&ar, (size_t)(maxn + 8) *
+            (sizeof(PBInst) + sizeof(PBDepList) + sizeof(PASI) + 8 * sizeof(int))
+            + 8192)) {
+        free(bbs); free(insts); return -1;
+    }
+    for (bi = 0; bi < nbb; bi++) {
+        int s = bbs[bi].start, e = bbs[bi].end, m = e - s;
+        PBInst *blk; PBDepList *dep; PASI *si; int *out, *pos, *hit, *regof;
+        PAB B; int nb, ok, k, w, ev;
+        if (m <= 0) continue;
+        if (s + m > nreal) continue;
+        pa_arena_reset(&ar);
+        blk = (PBInst *)pa_alloc(&ar, sizeof(PBInst) * (size_t)m);
+        dep = (PBDepList *)pa_alloc(&ar, sizeof(PBDepList) * (size_t)m);
+        si  = (PASI *)pa_calloc(&ar, sizeof(PASI) * (size_t)m);
+        out = (int *)pa_alloc(&ar, sizeof(int) * (size_t)m);
+        pos = (int *)pa_calloc(&ar, sizeof(int) * (size_t)m);
+        hit = (int *)pa_calloc(&ar, sizeof(int) * (size_t)m);
+        regof = (int *)pa_calloc(&ar, sizeof(int) * (size_t)m);
+        if (!blk || !dep || !si || !out || !pos || !hit || !regof) {
+            pa_arena_free(&ar); free(bbs); free(insts); return -1;
+        }
+        for (i = 0; i < m; i++) {
+            blk[i] = insts[s + i];
+            ub_fix_extra_du(&blk[i]);
+            if (pdefs || puses)
+                ub_union_pred(&blk[i], pdefs ? pdefs[s + i] : 0,
+                              puses ? puses[s + i] : 0);
+            si[i].isTex = (u8)pb_is_tex_batch_op(blk[i].op);
+            si[i].resToUse = -1;
+            si[i].anext = si[i].aprev = -1;
+        }
+        { int sv = _pb_tav_mode;
+          if (_pa_suses) _pb_tav_mode |= 64;
+          _pb_drop_guard = _pa_noguard;
+          _pb_anti_pclass = _pa_antip;
+          pb_calc_deps(blk, m, dep);
+          _pb_anti_pclass = 0;
+          _pb_drop_guard = 0;
+          _pb_tav_mode = sv;
+          if (_pa_syncpush) pa_add_sync_push_deps(blk, m, dep);
+          if (memdeps && ub_add_mem_deps(blk, m, dep) < 0) {
+              pa_arena_free(&ar); free(bbs); free(insts); return -1;
+          } }
+
+        _ub_soft_n = 0;
+        for (i = 0; i < m; i++) {
+            w = 0;
+            for (k = 0; k < dep[i].n; k++) {
+                int ty = dep[i].d[k].type, to = dep[i].d[k].to, r = -1, c;
+                if (ty > 2 || ty == PBD_FLOW) { dep[i].d[w++] = dep[i].d[k]; continue; }
+                c = ub_edge_class(blk, s, i, to, ty, &r);
+                if ((c == 1 || c == 4 || c == 7) && r >= 0 && _ub_soft_n < UB_SOFT_CAP) {
+                    _ub_soft_from[_ub_soft_n] = i;
+                    _ub_soft_to[_ub_soft_n] = to;
+                    _ub_soft_reg[_ub_soft_n] = r;
+                    _ub_soft_n++;
+                    continue;
+                }
+                dep[i].d[w++] = dep[i].d[k];
+            }
+            dep[i].n = w;
+        }
+        if (!_pa_ccp)
+            for (i = 0; i < m; i++)
+                blk[i].lat_full = (unsigned short)pb_base_latency(&blk[i]);
+        memset(&B, 0, sizeof(B));
+        B.blk = blk; B.dep = dep; B.si = si; B.n = m;
+        B.ipInBundle = -1; B.ipPriorTex = -1; B.ipPriorAvail = -1;
+        B.ipLastSched = -1;
+        B.lastTexSchedTime = -9999;
+        for (i = 0; i < m; i++) if (si[i].isTex) B.numTexRemaining++;
+        nb = pa_schedule_block(&B, out);
+        ok = (nb == m);
+        for (i = 0; ok && i < m; i++)
+            if (out[i] < 0 || out[i] >= m) ok = 0;
+        if (ok && _ub_soft_n > 0) {
+            for (i = 0; i < m; i++) pos[out[i]] = i;
+            for (ev = 0; ev < _ub_soft_n; ev++) {
+                int f = _ub_soft_from[ev], t = _ub_soft_to[ev];
+                if (pos[t] < pos[f]) { hit[t]++; regof[t] = _ub_soft_reg[ev]; }
+            }
+            for (i = 0; i < m && nout < maxo; i++) {
+                if (!hit[i]) continue;
+                o_slot[nout] = s + i;
+                o_reg[nout] = regof[i];
+                o_bs[nout] = s;
+                o_be[nout] = e;
+                o_cnt[nout] = hit[i];
+                nout++;
+            }
+        }
+        for (i = 0; i < m; i++) pbd_free(&dep[i]);
+    }
+    pa_arena_free(&ar);
+    free(bbs); free(insts);
+    return nout;
 }
 
 #define UBT_MB(n) ((u64)1 << ((n) - 39))

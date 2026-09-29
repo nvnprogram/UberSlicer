@@ -12,12 +12,15 @@
 #ifdef _WIN32
 #include <direct.h>
 #define MKDIR(p) _mkdir(p)
+
 #else
 #include <unistd.h>
 #define MKDIR(p) mkdir(p, 0777)
 #endif
 
 namespace ub {
+
+int g_maskw = 5;
 
 static std::string slurp_text(const std::string &p) {
     std::vector<u8> b = read_file(p);
@@ -128,6 +131,8 @@ struct DataSet {
 };
 
 
+
+
 struct UberCtx {
     Program prog;
     Spec sp;
@@ -135,6 +140,7 @@ struct UberCtx {
 
 static bool g_reorder = false;
 static bool g_reorder2 = false;
+static bool g_texsb = false;
 static bool g_fill = false;
 static int  g_fill_rounds = 8;
 static bool g_pa_anti = false;
@@ -354,10 +360,26 @@ struct Composed {
     ReorderStats ro;
     Dce2Stats dce;
     TexNarrowStats tn;
+    AnticopyStats ac;
+    SinkStats sk;
+    VnStats vn;
     std::vector<u8> pre_bc, pre_ct;
     bool has_pre = false;
+
+    bool occ_floored = false;
 };
 
+
+static void compose_tail(bool fragment, Composed &out, int need_warps = 0);
+
+struct TailEntry {
+    Composed c;
+    long long d[TAIL_NCTR];
+};
+static std::map<std::string, TailEntry> g_tail_cache;
+static void tail_cache_clear() { g_tail_cache.clear(); }
+
+static void compose_one_tail(bool fragment, Composed &out);
 
 static void compose_one(DataSet &D, bool fragment, const std::string &uber_key,
                         const std::vector<u32> &c6, const std::string &name,
@@ -365,10 +387,213 @@ static void compose_one(DataSet &D, bool fragment, const std::string &uber_key,
     UberCtx *c = get_ctx(D, fragment, uber_key, true);
     g_perf.n_compose++;
     g_stage_fragment = fragment;
-    emit(c->prog, c->sp, c6, name, out.st);
+    { PerfScope ps_(&g_perf.y[2]); g_perf.yn[2]++;
+      emit(c->prog, c->sp, c6, name, out.st); }
     out.bc = out.st.bc;
     out.ct = out.st.ct;
 
+    std::string key;
+    key.reserve(out.bc.size() + out.ct.size() + 1);
+    key.push_back(fragment ? 'F' : 'V');
+    key.append((const char *)out.bc.data(), out.bc.size());
+    key.append((const char *)out.ct.data(), out.ct.size());
+    auto tit = g_tail_cache.find(key);
+    if (tit != g_tail_cache.end()) {
+        g_perf.yn[5]++;
+        EmitStats keep = std::move(out.st);
+        out = tit->second.c;
+        out.st = std::move(keep);
+        tail_counters_add(tit->second.d);
+        return;
+    }
+    long long tc0[TAIL_NCTR];
+    tail_counters(tc0);
+    compose_one_tail(fragment, out);
+    TailEntry e;
+    tail_counters(e.d);
+    for (int i = 0; i < TAIL_NCTR; i++) e.d[i] -= tc0[i];
+    EmitStats keep = std::move(out.st);
+    out.st = EmitStats();
+    e.c = out;
+    out.st = std::move(keep);
+    g_tail_cache.emplace(std::move(key), std::move(e));
+}
+
+static const int VN_REACH[] = {1 << 30, 128, 16};
+
+static int g_vn_row = -2;
+
+static bool g_vn_inline = false;
+
+static void compose_one_tail(bool fragment, Composed &out) {
+
+    bool have_ref = false;
+    Composed ref;
+    if (g_vn && (g_vn_inline || g_vn_row >= 0)) {
+        PerfScope ps_(&g_perf.y[6]); g_perf.yn[6]++;
+        vn_cse(out.bc, out.ct, fragment, out.vn,
+               VN_REACH[g_vn_inline ? 0 : g_vn_row]);
+    } else if (g_vn && g_vn_row == -2) {
+        Composed base;
+        bool base_done = false;
+        for (size_t z = 0; z < sizeof VN_REACH / sizeof VN_REACH[0]; z++) {
+            Composed cand = out;
+            { PerfScope ps_(&g_perf.y[6]); g_perf.yn[6]++;
+              vn_cse(cand.bc, cand.ct, fragment, cand.vn, VN_REACH[z]); }
+            if (!cand.vn.rounds) break;
+            if (!base_done) {
+                base = out;
+                compose_tail(fragment, base);
+                base_done = true;
+                g_vn_rows++;
+                g_vn_row = -1;
+            }
+            const Composed stream = cand;
+            const int wo = base.occ_floored ? 0
+                                            : occupancy_of(base.rst.new_decl);
+            compose_tail(fragment, cand, wo);
+            bool win = !cand.occ_floored &&
+                       (base.occ_floored ||
+                        (occupancy_of(cand.rst.new_decl) >= wo &&
+                         issue_cycles(cand.bc, const_off(cand.ct)) <=
+                             issue_cycles(base.bc, const_off(base.ct))));
+            if (win) {
+                out.bc = stream.bc; out.ct = stream.ct; out.vn = stream.vn;
+                ref = std::move(cand);
+                have_ref = true;
+                g_vn_kept++;
+                g_vn_row = (int)z;
+                if (z) g_vn_ladder++;
+                break;
+            }
+        }
+        if (!have_ref && base_done) { ref = std::move(base); have_ref = true; }
+    }
+
+    auto tail_of = [&](Composed &c) {
+        if (have_ref && &c == &out) { EmitStats k = std::move(c.st);
+                                      AnticopyStats a = c.ac;
+                                      VnStats v = c.vn;
+                                      c = ref; c.st = std::move(k);
+                                      c.ac = a; c.vn = v; return; }
+        compose_tail(fragment, c);
+    };
+
+    if (g_anticopy) {
+        const Composed base = out;
+
+        auto run = [&](long long budget, Composed &alt) {
+            alt = base;
+            g_ac_budget = budget;
+            for (int round = 0; round < 3; round++) {
+                AnticopyStats s1;
+                std::vector<u8> keep_bc = alt.bc, keep_ct = alt.ct;
+                try {
+                    PerfScope ps_(&g_perf.y[0]); g_perf.yn[0]++;
+                    anticopy(alt.bc, alt.ct, fragment, s1);
+                } catch (const std::exception &e) {
+
+                    alt.bc.swap(keep_bc); alt.ct.swap(keep_ct);
+                    s1 = AnticopyStats();
+                    g_ac_declined++;
+                }
+                alt.ac.sites += s1.sites;
+                alt.ac.applied += s1.applied;
+                alt.ac.copies += s1.copies;
+                alt.ac.skip_shape += s1.skip_shape;
+                alt.ac.skip_reg += s1.skip_reg;
+                alt.ac.skip_cfg += s1.skip_cfg;
+                alt.ac.trimmed += s1.trimmed;
+                if (!s1.applied) break;
+            }
+            g_ac_budget = -1;
+        };
+        long long budget = -1;
+        Composed alt;
+        run(budget, alt);
+        if (alt.ac.applied == 0) { out.ac = alt.ac; tail_of(out); return; }
+        if (g_anticopy_force) {
+            compose_tail(fragment, alt);
+            g_ac_rows++;
+            out = std::move(alt); g_ac_kept++; return;
+        }
+
+        tail_of(out);
+        g_ac_rows++;
+        const int wo = occupancy_of(out.rst.new_decl);
+        const int cb = issue_cycles(out.bc, const_off(out.ct));
+        compose_tail(fragment, alt, wo);
+
+        long long applied = alt.ac.applied;
+        for (int step = 0; ; step++) {
+            const int wa = alt.occ_floored ? -1 : occupancy_of(alt.rst.new_decl);
+            if (wa >= wo && issue_cycles(alt.bc, const_off(alt.ct)) < cb) {
+                out = std::move(alt); g_ac_kept++;
+                if (step) g_ac_ladder++;
+                return;
+            }
+            if (wa >= wo || step >= 3) break;
+            applied /= 2;
+            if (applied < 1) break;
+            Composed next;
+            run(applied, next);
+            if (next.ac.applied == 0) break;
+            compose_tail(fragment, next, wo);
+            alt = std::move(next);
+        }
+        out.ac.sites = alt.ac.sites;
+        return;
+    }
+    tail_of(out);
+}
+
+static void renumber_sink(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
+                          RegStats &st, int need_warps, SinkStats &ss) {
+    if (!g_sink) {
+        renumber(bc, ct, fragment,   true, st, need_warps);
+        return;
+    }
+    std::vector<u8> s_bc = bc, s_ct = ct;
+    SinkStats s1;
+    { PerfScope ps_(&g_perf.x[29]); g_perf.xn[29]++; sink_cheap(s_bc, s_ct, fragment, s1); }
+    ss.cands += s1.cands; ss.moved += s1.moved; ss.slots += s1.slots;
+    ss.r_shape = s1.r_shape; ss.r_loop = s1.r_loop; ss.r_nodom = s1.r_nodom;
+    ss.r_near = s1.r_near; ss.r_clob = s1.r_clob; ss.r_nocross = s1.r_nocross;
+    ss.r_ext = s1.r_ext;
+    if (!s1.moved) {
+        renumber(bc, ct, fragment,   true, st, need_warps);
+        return;
+    }
+    RegStats rs;
+    renumber(s_bc, s_ct, fragment,   true, rs, need_warps);
+
+    const bool bound_wins = !rs.floored && s1.maxlive0 > 0 &&
+                            occupancy_of(rs.new_decl) > occupancy_of(s1.maxlive0);
+    bool keep = true;
+    if (bound_wins) {
+    } else {
+        renumber(bc, ct, fragment,   true, st, need_warps);
+        if (rs.floored && st.floored) return;
+        if (rs.floored) keep = false;
+        else if (st.floored) keep = true;
+        else {
+            int wa = occupancy_of(rs.new_decl), wb = occupancy_of(st.new_decl);
+            keep = wa > wb ||
+                   (wa == wb && issue_cycles(s_bc, const_off(s_ct)) <=
+                                    issue_cycles(bc, const_off(ct)));
+        }
+    }
+
+    if (keep) { bc.swap(s_bc); ct.swap(s_ct); st = rs; ss.kept++; }
+    else ss.reverted++;
+}
+
+static void compose_tail_inner(bool fragment, Composed &out, int need_warps);
+static void compose_tail(bool fragment, Composed &out, int need_warps) {
+    PerfScope ps_(&g_perf.y[1]); g_perf.yn[1]++;
+    compose_tail_inner(fragment, out, need_warps);
+}
+static void compose_tail_inner(bool fragment, Composed &out, int need_warps) {
 
     if (g_dce2_early) {
         Dce2Stats e;
@@ -400,16 +625,21 @@ static void compose_one(DataSet &D, bool fragment, const std::string &uber_key,
         std::vector<u8> a_bc = out.bc, a_ct = out.ct;
         RegStats ra;
         { PerfScope ps_(&g_perf.t_renumber); g_perf.n_renumber++;
-          renumber(a_bc, a_ct, fragment,   true, ra); }
+          renumber_sink(a_bc, a_ct, fragment, ra, need_warps, out.sk); }
+
         RegStats rb;
         { PerfScope ps_(&g_perf.t_renumber); g_perf.n_renumber++;
-          renumber(nf_bc, nf_ct, fragment,   true, rb); }
+          renumber_sink(nf_bc, nf_ct, fragment, rb,
+                        ra.floored ? need_warps : occupancy_of(ra.new_decl), out.sk); }
+        if (ra.floored && rb.floored) { out.occ_floored = true; return; }
 
-        u32 co_a, co_b;
-        co_a = const_off(a_ct);
-        co_b = const_off(nf_ct);
-        bool keep = occupancy_of(ra.new_decl) >= occupancy_of(rb.new_decl) &&
-                    issue_cycles(a_bc, co_a) <= issue_cycles(nf_bc, co_b);
+        bool keep = false;
+        if (!ra.floored) {
+            u32 co_a = const_off(a_ct), co_b = const_off(nf_ct);
+            keep = rb.floored ||
+                   (occupancy_of(ra.new_decl) >= occupancy_of(rb.new_decl) &&
+                    issue_cycles(a_bc, co_a) <= issue_cycles(nf_bc, co_b));
+        }
         if (keep) {
             out.bc.swap(a_bc); out.ct.swap(a_ct); out.rst = ra;
         } else {
@@ -422,25 +652,33 @@ static void compose_one(DataSet &D, bool fragment, const std::string &uber_key,
                          g_fill_rounds); }
         {
             PerfScope ps_(&g_perf.t_renumber); g_perf.n_renumber++;
-            renumber(out.bc, out.ct, fragment,   true, out.rst);
+            renumber_sink(out.bc, out.ct, fragment, out.rst, need_warps, out.sk);
+            if (out.rst.floored) { out.occ_floored = true; return; }
         }
     }
 
     if (g_reorder2) {
         ReorderStats r2;
-        reorder(out.bc, out.ct, r2, !g_reorder_nomem);
-        out.ro.moved += r2.moved;
-        out.ro.v11_violations |= r2.v11_violations;
+        std::vector<u8> r_bc = out.bc, r_ct = out.ct;
+        reorder(r_bc, r_ct, r2, !g_reorder_nomem);
+        if (issue_cycles(r_bc, const_off(r_ct)) <=
+            issue_cycles(out.bc, const_off(out.ct))) {
+            out.bc.swap(r_bc);
+            out.ct.swap(r_ct);
+            out.ro.moved += r2.moved;
+            out.ro.v11_violations |= r2.v11_violations;
+        }
     }
 
-    if (g_dce2) dce2(out.bc, out.ct, fragment, out.dce);
+    if (g_dce2) { PerfScope ps_(&g_perf.y[3]); g_perf.yn[3]++;
+        dce2(out.bc, out.ct, fragment, out.dce); }
     {
         PerfScope ps_(&g_perf.t_control);
         control_rewrite(out.bc, out.ct, out.facts);
     }
 
-    if (g_texnarrow)
-        texnarrow(out.bc, out.ct, fragment, out.tn);
+    if (g_texnarrow) { PerfScope ps_(&g_perf.y[4]); g_perf.yn[4]++;
+        texnarrow(out.bc, out.ct, fragment, out.tn); }
 }
 
 static void compose_cp(DataSet &D, bool fragment, const std::string &uber_key,
@@ -472,11 +710,11 @@ int g_lm_pick_promote = 0, g_lm_pick_compact = 0, g_lm_pick_off = 0;
 int g_lm_pick_cp = 0;
 
 static bool cheaper(const Composed &a, const Composed &b) {
+    int wa = occupancy_of(a.rst.new_decl), wb = occupancy_of(b.rst.new_decl);
+    if (wa != wb) return wa > wb;
     u32 ca = const_off(a.ct), cb = const_off(b.ct);
     int ya = issue_cycles(a.bc, ca), yb = issue_cycles(b.bc, cb);
     if (ya != yb) return ya < yb;
-    int wa = occupancy_of(a.rst.new_decl), wb = occupancy_of(b.rst.new_decl);
-    if (wa != wb) return wa > wb;
     return a.facts.n_real < b.facts.n_real;
 }
 
@@ -538,10 +776,10 @@ static bool better_c(const Composed &a, const Composed &b) {
     return a.facts.n_real < b.facts.n_real;
 }
 
-bool g_cbfold_force = false;
-bool g_cse_force    = false;
-bool g_idfold_force = false;
-bool g_fmac_force   = false;
+bool g_cbfold_force = true;
+bool g_cse_force    = true;
+bool g_idfold_force = true;
+bool g_fmac_force   = true;
 
 int g_alg_cb_kept = 0, g_alg_cse_kept = 0, g_alg_id_kept = 0, g_alg_fm_kept = 0;
 int g_alg_base = 0, g_alg_rows = 0;
@@ -565,8 +803,15 @@ static void compose(DataSet &D, bool fragment, const std::string &uber_key,
     renumber_cache_clear();
     fill_cache_clear();
     run3_cache_clear();
+    tail_cache_clear();
+    g_vn_row = -2;
 
-    if (g_quick) { compose_one(D, fragment, uber_key, c6, name, out); return; }
+    if (g_quick) {
+        g_vn_inline = true;
+        compose_one(D, fragment, uber_key, c6, name, out);
+        g_vn_inline = false;
+        return;
+    }
     bool want[3] = {g_cbfold, g_cse_mov32i, g_idfold};
     bool forced[3] = {g_cbfold_force, g_cse_force, g_idfold_force};
     bool g[3];
@@ -674,6 +919,9 @@ static std::string content_name(const std::vector<u8> &bc) {
 
 struct ProfRec {
     int cycles = 0, instrs = 0, temp = 0, warps = 0;
+
+    long long weight = 0;
+    int ipa_dup = 0;
     u32 lmem = 0;
     size_t bytes = 0;
 
@@ -714,6 +962,8 @@ static void profile_pair(const std::vector<u8> &bc, const std::vector<u8> &ct,
     CtlFacts f;
     control_facts(bc, ct, f);
     p.instrs = f.n_real;
+    p.weight = f.rate_weight;
+    p.ipa_dup = f.ipa_redundant;
     const NVNshaderControl *c = ctl(ct);
     p.temp = (int)c->mProgramRegNum;
     p.lmem = c->mPerWarpScratchSize;
@@ -844,11 +1094,28 @@ static int cmd_native(DataSet &D, bool fragment,
                std::get<1>(r) ? "PASS" : "FAIL", std::get<2>(r).c_str());
     u32 co = const_off(c.ct);
     printf("%-30s instrs %5d  cycles %6d  temp %3d  warps %2d  lmem %6u  "
-           "bytes %6zu%s\n",
+           "bytes %6zu  weight %6lld  ipadup %3d%s\n",
            out_name.c_str(), c.st.n_emit, issue_cycles(c.bc, co),
            c.facts.gpr_count, occupancy_of(c.facts.gpr_count),
-           c.facts.lmem_bytes, c.bc.size(),
+           c.facts.lmem_bytes, c.bc.size(), c.facts.rate_weight,
+           c.facts.ipa_redundant,
            c.ro.v11_violations ? "  V11 VIOLATED" : "");
+    if (g_press)
+        printf("press: maxlive %d decl %d  copies cand %d merged %d already %d "
+               "pred %d constr %d nogpr %d interf %d clash %d pin %d  "
+               "lm cand %d merged %d elided %d  id cand %d merged %d  "
+               "coal pairs %lld hits %lld  sink cand %d moved %d slots %lld "
+               "kept %d reverted %d  last round: shape %d loop %d nodom %d "
+               "near %d clob %d nocross %d ext %d\n",
+               c.rst.maxlive, c.rst.new_decl, c.st.cp.cands, c.st.cp.merged,
+               c.st.cp.already, c.st.cp.rej_pred, c.st.cp.rej_constrained,
+               c.st.cp.rej_nogpr, c.st.cp.rej_interfere, c.st.cp.rej_clash,
+               c.st.cp.pin_kept, c.st.cp.lm_cands, c.st.cp.lm_merged,
+               c.st.cp.lm_elided, c.st.cp.id_cands, c.st.cp.id_merged,
+               g_coal_pairs, g_coal_hits, c.sk.cands, c.sk.moved, c.sk.slots,
+               c.sk.kept, c.sk.reverted, c.sk.r_shape, c.sk.r_loop,
+               c.sk.r_nodom, c.sk.r_near, c.sk.r_clob, c.sk.r_nocross,
+               c.sk.r_ext);
     return R.nbad();
 }
 
@@ -869,6 +1136,14 @@ static int cmd_gate(const std::string &bcp, const std::string &ctp,
     printf("profile        instrs %5d  cycles %6d  temp %3d  warps %2d  "
            "lmem %6u  bytes %6zu\n",
            p.instrs, p.cycles, p.temp, p.warps, p.lmem, p.bytes);
+    if (g_press) {
+        PressFacts pf;
+        pressure_facts(bc, ct, pf);
+        printf("press          maxlive %3d  over48 %5d  over56 %5d  of %5d  "
+               "names %3d  webs %4d  mov_rr %3d  srcdead %3d  srclive %3d\n",
+               pf.maxlive, pf.over48, pf.over56, pf.npts, pf.nnames, pf.nwebs,
+               pf.mov_rr, pf.mov_srcdead, pf.mov_srclive);
+    }
     return R.nbad() ? 1 : 0;
 }
 
@@ -889,7 +1164,21 @@ static const ShipFlag g_ship_flags[] = {
 
     { "dce2",          &g_dce2,          true  },
 
+    { "anticopy",      &g_anticopy,      true  },
+
+    { "coal",          &g_coal,          true  },
+
+    { "sink",          &g_sink,          true  },
+
+    { "imap-trim",     &g_imap_trim,     true  },
+
     { "texnarrow",     &g_texnarrow,     true  },
+
+    { "vn",            &g_vn,            true  },
+
+    { "reorder2",      &g_reorder2,      true  },
+
+    { "texsb",         &g_texsb,         true  },
 };
 
 
@@ -922,11 +1211,13 @@ static int run(int argc, char **argv) {
     bool gate = false;
 
     std::vector<std::string> pos;
-    for (int i = 1; i < argc; i++) {
-        std::string a = argv[i];
+
+    std::vector<std::string> av(argv + 1, argv + argc);
+    for (size_t i = 0; i < av.size(); i++) {
+        std::string a = av[i];
         auto next = [&]() -> std::string {
-            if (i + 1 >= argc) fail("%s needs a value", a.c_str());
-            return argv[++i];
+            if (i + 1 >= av.size()) fail("%s needs a value", a.c_str());
+            return av[++i];
         };
 
         if (a == "--model") (void)next();
@@ -969,6 +1260,7 @@ static int run(int argc, char **argv) {
 
     for (const ShipFlag &f : g_ship_flags) *f.flag = true;
     if (g_pa_anti) uber_set_pa_anti(1);
+
 
     resolve_uber_args(uargs);
     if (arg_bank >= 0) {
@@ -1016,6 +1308,7 @@ static int run(int argc, char **argv) {
     return 1;
 }
 
+extern long long g_spill_ok, g_remat_ok;
 
 }
 

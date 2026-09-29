@@ -1076,12 +1076,6 @@ static PBBlock *pb_basic_blocks(const PBInst *inst, int n, int *nbb) {
     return bbs;
 }
 
-static int pb_has_lldepbar(const PBInst *inst, int n) {
-    for (int i = 0; i < n; i++)
-        if (inst[i].high_cost_sb && inst[i].needs_wsb) return 1;
-    return 0;
-}
-
 typedef struct {
     int *wbar, *rbar; u8 *wait;
 } PBSBResult;
@@ -4574,7 +4568,7 @@ static u32 *pb_schedule_program(const u8 *bc, u32 constOff, int *n_out) {
     int n_written = real_bundles + extra;
     u32 EMPTY_CTRL = 0x7e0;
 
-    int has_ll = pb_has_lldepbar(insts, n);
+    int has_ll = 0;
     int nbb;
     PBBlock *bbs = pb_basic_blocks(insts, n, &nbb);
 

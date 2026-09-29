@@ -151,6 +151,26 @@ static void check_operands(Ctx &C, int i, u64 q) {
              "assumed [%s]", i, op_name(nm), gs.c_str(), ws.c_str());
     }
 
+    if (R.fmac.empty() || R.fmac[(size_t)i] < 0) {
+        const OpSets &T = S();
+        int poffs[8];
+        int pm = pred_src_offsets(nm, p.props[i], poffs);
+        for (int k = 0; k < pm; k++) {
+            int off = poffs[k];
+            int pn = (int)((p.q[i] >> off) & 7);
+            if (pn == PT || PREG + pn == gp || T.pred39_spurious[(size_t)nm])
+                continue;
+            if (off == 39 && T.pred39_gpr[(size_t)nm]) continue;
+            Tri val = sp.predval(vals, pn, (int)((p.q[i] >> (off + 3)) & 1));
+            if (val == TRI_U) continue;
+            int en = (int)((q >> off) & 7), einv = (int)((q >> (off + 3)) & 1);
+            if (en != PT || einv != (val == TRI_F ? 1 : 0))
+                fail("predicate literal at %d (%s) bit %d reads %s%s, the "
+                     "analysis has %s", i, op_name(nm), off, einv ? "!" : "",
+                     en == PT ? "PT" : "a register", val ? "true" : "false");
+        }
+    }
+
     std::set<int> gotd, wantd;
     {
         RSet dm = d; dm.unite(md);
@@ -246,8 +266,11 @@ static u64 rewrite(Ctx &C, int i, OptMap &optmap) {
                 if (!T.pred_src_ok[(size_t)nm])
                     fail("%s reads a known predicate at bit %d and is not on "
                          "the literal-rewrite list", op_name(nm), off);
+
+                bool inv = (q >> (off + 3)) & 1;
+                bool val = (*x != 0) != inv;
                 q = setbits(q, off, 3, PT);
-                q = setbits(q, off + 3, 1, *x ? 0 : 1);
+                q = setbits(q, off + 3, 1, val ? 0 : 1);
             } else {
                 q = setbits(q, off, 3, (u64)(C.regmap(key, false, i) - PREG));
             }

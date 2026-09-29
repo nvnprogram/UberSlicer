@@ -515,15 +515,21 @@ void post_coalesce(Spec &sp, const RunRes &R, Alloc &al,
         int r = (it != reg.end()) ? it->second : pr.second;
         if (r < PREG) perreg[r].insert(f);
     }
+
     int viol = 0;
+    std::vector<const BV *> pv;
     for (auto &pr : perreg) {
         std::vector<int> ws(pr.second.begin(), pr.second.end());
-        for (size_t x = 0; x < ws.size(); x++)
-            for (size_t y = x + 1; y < ws.size(); y++) {
-                const BV *A = livepts.count(ws[x]) ? &livepts[ws[x]] : nullptr;
-                const BV *B = livepts.count(ws[y]) ? &livepts[ws[y]] : nullptr;
-                if (A && B && bv_inter(*A, *B)) viol++;
-            }
+        pv.clear();
+        for (int w : ws) {
+            auto it = livepts.find(w);
+            pv.push_back(it == livepts.end() ? nullptr : &it->second);
+        }
+        for (size_t x = 0; x < ws.size(); x++) {
+            if (!pv[x]) continue;
+            for (size_t y = x + 1; y < ws.size(); y++)
+                if (pv[y] && bv_inter(*pv[x], *pv[y])) viol++;
+        }
     }
     if (viol)
         fail("lm coalescing produced %d overlapping same-register web pairs", viol);
@@ -720,12 +726,20 @@ int copy_coalesce(Spec &sp, Alloc &al, std::unordered_map<int, int> &wr,
             if (r >= 0) perreg[r].insert(f);
         }
         int viol = 0;
+
+        std::vector<const BV *> pv;
         for (auto &pr : perreg) {
             std::vector<int> ws(pr.second.begin(), pr.second.end());
-            for (size_t x = 0; x < ws.size(); x++)
+            pv.clear();
+            for (int w : ws) {
+                auto it = lp.find(w);
+                pv.push_back(it == lp.end() ? nullptr : &it->second);
+            }
+            for (size_t x = 0; x < ws.size(); x++) {
+                if (!pv[x]) continue;
                 for (size_t y = x + 1; y < ws.size(); y++)
-                    if (lp.count(ws[x]) && lp.count(ws[y]) &&
-                        bv_inter(lp[ws[x]], lp[ws[y]])) viol++;
+                    if (pv[y] && bv_inter(*pv[x], *pv[y])) viol++;
+            }
         }
         if (viol)
             fail("copy coalescing produced %d overlapping same-register web "

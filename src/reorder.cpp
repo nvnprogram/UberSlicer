@@ -16,6 +16,9 @@ int uber_hoist_ll(const unsigned char *bc, unsigned int constOff, int nreal,
 void ub_set_webs(const int *wuse, const int *wdef, int stride);
 void ub_fe_reset(void);
 void ub_fe_get(long long *seen, long long *fals);
+void ub_fe_cls_get(long long *cls);
+void ub_fe_renames_get(long long *v);
+void ub_fe_crossed_get(long long *defs, long long *edges);
 void ub_cp_reset(void);
 void ub_cp_get(long long *all, long long *nofalse);
 extern int _ub_nofalse;
@@ -133,6 +136,30 @@ bool gate_memorder(const std::vector<u8> &pre_bc, const std::vector<u8> &pre_ct,
     mem_sequence(pre_bc, pre_ct, a);
     mem_sequence(post_bc, post_ct, b);
     char buf[256];
+
+    {
+        std::set<long> pre_slots;
+        for (const MemOp &m : a)
+            if (m.r.cls == MC_LOCAL && m.r.exact) pre_slots.insert(m.r.off);
+        std::vector<MemOp> kept;
+        std::set<long> stored;
+        int nfresh = 0;
+        for (const MemOp &m : b) {
+            if (m.r.cls == MC_LOCAL && m.r.exact && !pre_slots.count(m.r.off)) {
+                nfresh++;
+                if (m.r.wr) stored.insert(m.r.off);
+                else if (!stored.count(m.r.off)) {
+                    snprintf(buf, sizeof buf,
+                             "load from fresh local slot %ld before any store", m.r.off);
+                    detail = buf;
+                    return false;
+                }
+                continue;
+            }
+            kept.push_back(m);
+        }
+        if (nfresh) b.swap(kept);
+    }
     if (a.size() != b.size()) {
         snprintf(buf, sizeof buf, "memory-op count changed %zu -> %zu",
                  a.size(), b.size());
@@ -179,8 +206,8 @@ bool gate_memorder(const std::vector<u8> &pre_bc, const std::vector<u8> &pre_ct,
 
 bool g_reorder_report_only = false;
 
-static void pred_masks(const Program &p, int n, std::vector<u8> &pdefs,
-                       std::vector<u8> &puses) {
+void pred_masks(const Program &p, int n, std::vector<u8> &pdefs,
+                std::vector<u8> &puses) {
     pdefs.assign((size_t)n, 0);
     puses.assign((size_t)n, 0);
     for (int k = 0; k < n && k < p.n; k++) {
@@ -235,7 +262,7 @@ int issue_cycles(const std::vector<u8> &bc, u32 co) {
 }
 
 bool g_presched_probe = false;
-bool g_presched_drop = false;
+int g_presched_drop = 0;
 bool g_stage_fragment = true;
 FEStats g_fe;
 
@@ -269,7 +296,7 @@ void reorder(std::vector<u8> &bc, std::vector<u8> &ct, ReorderStats &st,
         if (wn != n) fail("reorder: web map slot count %d != %d", wn, n);
         ub_fe_reset();
         ub_cp_reset();
-        _ub_nofalse = g_presched_drop ? 1 : 0;
+        _ub_nofalse = g_presched_drop;
         _ub_docp = g_presched_drop ? 0 : 1;
         ub_set_webs(wuse.data(), wdef.data(), WEB_STRIDE);
     }
@@ -281,11 +308,19 @@ void reorder(std::vector<u8> &bc, std::vector<u8> &ct, ReorderStats &st,
                              &nslots, memdeps ? 1 : 0, pdefs.data(),
                              puses.data());
     if (want_webs) {
-        long long seen[3], fals[3], cpa = 0, cpn = 0;
+        long long seen[3], fals[3], cpa = 0, cpn = 0, cls[8], ren = 0;
+        long long crd = 0, cre = 0;
         ub_fe_get(seen, fals);
+        ub_fe_cls_get(cls);
+        ub_fe_renames_get(&ren);
+        ub_fe_crossed_get(&crd, &cre);
         ub_cp_get(&cpa, &cpn);
         if (!g_fe_locked) {
             for (int k = 0; k < 3; k++) { g_fe.seen[k] += seen[k]; g_fe.fals[k] += fals[k]; }
+            for (int k = 0; k < 8; k++) g_fe.cls[k] += cls[k];
+            g_fe.renames += ren;
+            g_fe.crossed += crd;
+            g_fe.crossed_edges += cre;
             g_fe.cp_all += cpa;
             g_fe.cp_nofalse += cpn;
             g_fe_locked = true;
@@ -313,6 +348,7 @@ void reorder(std::vector<u8> &bc, std::vector<u8> &ct, ReorderStats &st,
         return v.size();
     }());
 }
+
 
 struct FillEntry {
     std::vector<u8> bc;

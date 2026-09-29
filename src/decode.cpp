@@ -164,6 +164,16 @@ const OpSets &S() {
         "D2f", "D2i", "Dmma"});
     s->local_ops = make_opset({"Ldl", "Stl"});
 
+    s->rate_quarter = make_opset({
+        "Mufu", "Rro", "F2f", "F2i", "I2f", "I2i", "Ipa", "Ald",
+        "Ast", "Al2p", "Bra", "Brx", "Jmp", "Jmx", "Ssy", "Sync",
+        "Pbk", "Brk", "Pcnt", "Cont", "Exit", "Kil", "Ret",
+        "Depbar", "Bar", "Cal", "Jcal", "Pexit", "Shfl", "Vote"});
+    s->rate_half = make_opset({
+        "Dadd", "Dmul", "Dfma", "Dset", "Dsetp", "Dmnmx", "Imad",
+        "Imadsp", "Imul", "Imul32i", "Imad32i", "Xmad", "Popc",
+        "Flo", "Shf", "Lea", "Iadd3", "Prmt", "Bfe", "Bfi"});
+
     s->ctl_texs_fam = make_opset({"Texs", "Tlds", "Tld4s", "TexsF16",
                                   "TldsF16", "Tld4sF16"});
     s->ctl_tex_fam = make_opset({"Tex", "Tld", "Tld4", "Tmml", "Txq", "Txd"});
@@ -181,7 +191,8 @@ const OpSets &S() {
     ID(Shr); ID(Iadd); ID(Iadd32i); ID(Lop); ID(Lop32i); ID(Fsetp);
     ID(Fset); ID(Fmnmx); ID(Pset); ID(Xmad); ID(Ffma); ID(Texs); ID(Ast);
     ID(Iadd3); ID(Ald); ID(Al2p); ID(F2f); ID(F2i); ID(I2f); ID(I2i);
-    ID(Fadd); ID(Fmul);
+    ID(Fadd);
+    ID(Ipa); ID(Fmul);
     ID(P2r); ID(Vote); ID(Votevtg); ID(Flo); ID(Popc);
 #undef ID
 

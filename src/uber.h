@@ -16,7 +16,7 @@
 #include <functional>
 
 #define UBERSPEC_STAMP_MAGIC 0x50534255u
-#define UBERSPEC_CODEGEN_VER 2u
+#define UBERSPEC_CODEGEN_VER 3u
 
 namespace ub {
 
@@ -95,15 +95,23 @@ public:
 
 static const int MASKW = 24;
 
+extern int g_maskw;
+
 struct Mask {
     u64 w[MASKW];
     Mask() { clear(); }
     void clear() { std::memset(w, 0, sizeof w); }
     bool test(int b) const { return (w[b >> 6] >> (b & 63)) & 1u; }
-    void set(int b) { w[b >> 6] |= (u64)1 << (b & 63); }
+    void set(int b) {
+        int i = b >> 6;
+        if (i >= g_maskw) g_maskw = i + 1;
+        w[i] |= (u64)1 << (b & 63);
+    }
     void reset(int b) { w[b >> 6] &= ~((u64)1 << (b & 63)); }
+
     bool any() const {
-        for (int i = 0; i < MASKW; i++) if (w[i]) return true;
+        int nw = MW();
+        for (int i = 0; i < nw; i++) if (w[i]) return true;
         return false;
     }
     bool operator==(const Mask &o) const {
@@ -111,27 +119,32 @@ struct Mask {
     }
     bool operator!=(const Mask &o) const { return !(*this == o); }
     Mask &operator|=(const Mask &o) {
-        for (int i = 0; i < MASKW; i++) w[i] |= o.w[i];
+        int nw = MW();
+        for (int i = 0; i < nw; i++) w[i] |= o.w[i];
         return *this;
     }
     Mask &operator&=(const Mask &o) {
-        for (int i = 0; i < MASKW; i++) w[i] &= o.w[i];
+        int nw = MW();
+        for (int i = 0; i < nw; i++) w[i] &= o.w[i];
         return *this;
     }
     bool intersects(const Mask &o) const {
-        for (int i = 0; i < MASKW; i++) if (w[i] & o.w[i]) return true;
+        int nw = MW();
+        for (int i = 0; i < nw; i++) if (w[i] & o.w[i]) return true;
         return false;
     }
 
     void andnot_or(const Mask &k, const Mask &g) {
-        for (int i = 0; i < MASKW; i++) w[i] = (w[i] & ~k.w[i]) | g.w[i];
+        int nw = MW();
+        for (int i = 0; i < nw; i++) w[i] = (w[i] & ~k.w[i]) | g.w[i];
     }
     void andnot(const Mask &k) {
-        for (int i = 0; i < MASKW; i++) w[i] &= ~k.w[i];
+        int nw = MW();
+        for (int i = 0; i < nw; i++) w[i] &= ~k.w[i];
     }
     int popcount() const {
-        int n = 0;
-        for (int i = 0; i < MASKW; i++) {
+        int n = 0, nw = MW();
+        for (int i = 0; i < nw; i++) {
             u64 x = w[i];
             while (x) { x &= x - 1; n++; }
         }
@@ -139,7 +152,8 @@ struct Mask {
     }
     void bits(std::vector<int> &out) const {
         out.clear();
-        for (int i = 0; i < MASKW; i++) {
+        int nw = MW();
+        for (int i = 0; i < nw; i++) {
             u64 x = w[i];
             while (x) {
                 int b = __builtin_ctzll(x);
@@ -148,18 +162,21 @@ struct Mask {
             }
         }
     }
+    static int MW() { return g_maskw <= 8 ? 8 : (g_maskw <= 16 ? 16 : MASKW); }
 };
 
 typedef std::vector<std::pair<int32_t, u32>> VMap;
 
 inline const u32 *vmap_get(const VMap &m, int32_t k) {
-    size_t lo = 0, hi = m.size();
-    while (lo < hi) {
-        size_t mid = (lo + hi) >> 1;
-        if (m[mid].first < k) lo = mid + 1; else hi = mid;
+    size_t n = m.size();
+    if (!n) return nullptr;
+    const std::pair<int32_t, u32> *b = m.data();
+    while (n > 1) {
+        size_t h = n >> 1;
+        b += (b[h].first <= k) ? h : 0;
+        n -= h;
     }
-    if (lo < m.size() && m[lo].first == k) return &m[lo].second;
-    return nullptr;
+    return b->first == k ? &b->second : nullptr;
 }
 inline void vmap_set(VMap &m, int32_t k, u32 v) {
     size_t lo = 0, hi = m.size();
@@ -409,6 +426,7 @@ struct OpSets {
     OpSet safe_ops;
     OpSet load_or_store, global_store, fp64, local_ops;
     OpSet ctl_texs_fam, ctl_tex_fam, ctl_tex_bindless;
+    OpSet rate_quarter, rate_half;
     OpSet tex_ops_audit;
 
     int O_Nop, O_Mov, O_Mov32i, O_Ldc, O_Stl, O_Ldl, O_Invalid, O_Shfl;
@@ -418,10 +436,12 @@ struct OpSets {
     int O_Fsetp, O_Fset, O_Fmnmx, O_Pset, O_Xmad, O_Ffma, O_Texs, O_Ast;
     int O_Iadd3, O_Ald, O_Al2p, O_F2f, O_F2i, O_I2f, O_I2i;
     int O_Fadd, O_Fmul;
+    int O_Ipa;
     int O_P2r, O_Vote, O_Votevtg, O_Flo, O_Popc;
 };
 const OpSets &S();
 
+double perf_now();
 struct PerfCounters {
     long long n_compose = 0;
     long long n_compose_lm = 0, n_compose_cp = 0, n_compose_top = 0;
@@ -432,15 +452,24 @@ struct PerfCounters {
     double t_run3 = 0, t_alloc = 0, t_webreg = 0, t_postco = 0, t_copyco = 0,
            t_emitbody = 0, t_reorder = 0, t_fill = 0, t_renumber = 0,
            t_control = 0;
-    double x[16] = {0};
-    long long xn[16] = {0};
+    double x[48] = {0};
+    long long xn[48] = {0};
+    double y[16] = {0};
+    long long yn[16] = {0};
+    double t0 = perf_now();
 };
 extern PerfCounters g_perf;
-double perf_now();
 struct PerfScope {
     double *acc; double t0;
     explicit PerfScope(double *a) : acc(a), t0(perf_now()) {}
     ~PerfScope() { *acc += perf_now() - t0; }
+};
+
+struct PerfSpan {
+    double *acc; double t0;
+    explicit PerfSpan(double *a) : acc(a), t0(perf_now()) {}
+    void stop() { if (acc) { *acc += perf_now() - t0; acc = nullptr; } }
+    ~PerfSpan() { stop(); }
 };
 
 }

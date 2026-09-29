@@ -394,13 +394,19 @@ bool g_rp_align = false;
 enum ColourOrder { ORD_DEG = 0, ORD_SMALLEST_LAST, ORD_DEG_ASC, ORD_NAME,
                    ORD_NAME_DESC, ORD_N };
 
-static void colour(const std::vector<std::vector<int>> &runs, Adj &adj,
-                   const std::set<int> &pinned, const BConf *bconf, int limit,
-                   std::unordered_map<int, int> &cmap, int corder = ORD_DEG);
+bool g_coal = false;
+long long g_coal_pairs = 0, g_coal_hits = 0;
+typedef std::vector<std::pair<int, int>> Affinity;
 
 static void colour(const std::vector<std::vector<int>> &runs, Adj &adj,
                    const std::set<int> &pinned, const BConf *bconf, int limit,
-                   std::unordered_map<int, int> &cmap, int corder) {
+                   std::unordered_map<int, int> &cmap, int corder = ORD_DEG,
+                   const Affinity *aff = nullptr);
+
+static void colour(const std::vector<std::vector<int>> &runs, Adj &adj,
+                   const std::set<int> &pinned, const BConf *bconf, int limit,
+                   std::unordered_map<int, int> &cmap, int corder,
+                   const Affinity *aff) {
     const int align_mod = 4;
     cmap.clear();
 
@@ -535,6 +541,13 @@ static void colour(const std::vector<std::vector<int>> &runs, Adj &adj,
         return runs[a][0] < runs[b][0];
     });
 
+    std::unordered_map<int, std::vector<int>> affadj;
+    if (aff)
+        for (const auto &pr : *aff) {
+            affadj[pr.first].push_back(pr.second);
+            affadj[pr.second].push_back(pr.first);
+        }
+
     for (size_t idx : order) {
         const std::vector<int> &run = runs[idx];
         if (pin[idx]) {
@@ -543,6 +556,34 @@ static void colour(const std::vector<std::vector<int>> &runs, Adj &adj,
             if (!fits(run, run[0])) fail("pinned run does not fit at its own base");
             place(run, run[0]);
             continue;
+        }
+        if (aff && run.size() == 1) {
+
+            auto ait = affadj.find(run[0]);
+            if (ait != affadj.end()) {
+                std::map<int, int> want;
+                for (int o : ait->second) {
+                    auto ct = cmap.find(o);
+                    if (ct != cmap.end()) want[ct->second]++;
+                }
+                std::vector<std::pair<int, int>> cs(want.begin(), want.end());
+                std::stable_sort(cs.begin(), cs.end(),
+                                 [](const std::pair<int, int> &a,
+                                    const std::pair<int, int> &b) {
+                                     return a.second > b.second;
+                                 });
+                int hi1 = (limit < 0 ? RZ : limit) - 1;
+                bool placed = false;
+                for (const auto &pr : cs) {
+                    int c = pr.first;
+                    if (c < 0 || c > hi1 || !fits(run, c)) continue;
+                    place(run, c);
+                    g_coal_hits++;
+                    placed = true;
+                    break;
+                }
+                if (placed) continue;
+            }
         }
         int step = constrained[idx] ? align_mod : 1;
         int start = constrained[idx] ? (run[0] % align_mod) : 0;
@@ -602,39 +643,159 @@ static const int SPLIT_NODE0 = 4096;
 
 struct SplitMap {
 
-    std::unordered_map<long long, int> fnode;
+    std::vector<int> fnode;
     std::set<int> nodes;
     int nsplit = 0, nnodes = 0;
-    static long long key(int i, int off) { return (long long)i * 64 + off; }
+    enum { FSTRIDE = 8 };
+    static int offix(int off) {
+        switch (off) {
+        case 0:  return 0;
+        case 8:  return 1;
+        case 20: return 2;
+        case 28: return 3;
+        case 39: return 4;
+        default: return -1;
+        }
+    }
+    void slots(int n) { fnode.assign((size_t)n * FSTRIDE, -1); }
+    void set(int i, int off, int v) {
+        int x = offix(off);
+        if (x < 0) fail("split: field offset %d is not a register slot", off);
+        fnode[(size_t)i * FSTRIDE + (size_t)x] = v;
+    }
     int at(int i, int off) const {
-        auto it = fnode.find(key(i, off));
-        return it == fnode.end() ? -1 : it->second;
+        int x = offix(off);
+        if (x < 0) return -1;
+        size_t k = (size_t)i * FSTRIDE + (size_t)x;
+        return k < fnode.size() ? fnode[k] : -1;
     }
 };
 
 bool g_rp_defrelax = false;
 
+static bool dominators(const CFGraph &c, const std::vector<char> &reach,
+                       int nreal, int &W, std::vector<u64> &dom) {
+    W = (nreal + 63) / 64;
+    dom.assign((size_t)nreal * W, 0);
+    for (int i = 0; i < nreal; i++) {
+        if (!reach[(size_t)i]) continue;
+        if (i == 0) { dom[0] |= 1; continue; }
+        for (int w = 0; w < W; w++) dom[(size_t)i * W + w] = ~(u64)0;
+    }
+    std::vector<u64> tmp((size_t)W);
+    for (int round = 0; round < 64; round++) {
+        bool ch = false;
+        for (int i = 1; i < nreal; i++) {
+            if (!reach[(size_t)i]) continue;
+            for (int w = 0; w < W; w++) tmp[(size_t)w] = ~(u64)0;
+            bool any = false;
+            for (int pr : c.pred[(size_t)i]) {
+                if (pr < 0 || pr >= nreal || !reach[(size_t)pr]) continue;
+                any = true;
+                for (int w = 0; w < W; w++) tmp[(size_t)w] &= dom[(size_t)pr * W + w];
+            }
+            if (!any) for (int w = 0; w < W; w++) tmp[(size_t)w] = 0;
+            tmp[(size_t)(i >> 6)] |= (u64)1 << (i & 63);
+            for (int w = 0; w < W; w++)
+                if (dom[(size_t)i * W + w] != tmp[(size_t)w]) {
+                    dom[(size_t)i * W + w] = tmp[(size_t)w];
+                    ch = true;
+                }
+        }
+        g_perf.xn[31]++;
+        if (!ch) return true;
+    }
+    return false;
+}
+
+static void cycle_nodes(const CFGraph &c, const std::vector<char> &reach,
+                        int nreal, std::vector<char> &in_cycle) {
+    in_cycle.assign((size_t)nreal, 0);
+    std::vector<int> index((size_t)nreal, -1), low((size_t)nreal, 0);
+    std::vector<char> onstk((size_t)nreal, 0);
+    std::vector<int> stk;
+    int idx = 0;
+
+    struct Frame { int v; size_t k; };
+    for (int s = 0; s < nreal; s++) {
+        if (!reach[(size_t)s] || index[(size_t)s] >= 0) continue;
+        std::vector<Frame> call;
+        call.push_back({s, 0});
+        index[(size_t)s] = low[(size_t)s] = idx++;
+        stk.push_back(s); onstk[(size_t)s] = 1;
+        while (!call.empty()) {
+            Frame &f = call.back();
+            int v = f.v;
+            const std::vector<int> &sv = c.succ[(size_t)v];
+            if (f.k < sv.size()) {
+                int w = sv[f.k++];
+                if (w < 0 || w >= nreal || !reach[(size_t)w]) continue;
+                if (index[(size_t)w] < 0) {
+                    index[(size_t)w] = low[(size_t)w] = idx++;
+                    stk.push_back(w); onstk[(size_t)w] = 1;
+                    call.push_back({w, 0});
+                } else if (onstk[(size_t)w]) {
+                    if (index[(size_t)w] < low[(size_t)v]) low[(size_t)v] = index[(size_t)w];
+                }
+                continue;
+            }
+            if (low[(size_t)v] == index[(size_t)v]) {
+                std::vector<int> comp;
+                for (;;) {
+                    int w = stk.back(); stk.pop_back(); onstk[(size_t)w] = 0;
+                    comp.push_back(w);
+                    if (w == v) break;
+                }
+                bool cyc = comp.size() > 1;
+                if (!cyc)
+                    for (int t : c.succ[(size_t)v]) if (t == v) cyc = true;
+                if (cyc) for (int w : comp) in_cycle[(size_t)w] = 1;
+            }
+            call.pop_back();
+            if (!call.empty()) {
+                int u = call.back().v;
+                if (low[(size_t)v] < low[(size_t)u]) low[(size_t)u] = low[(size_t)v];
+            }
+        }
+    }
+}
+
 static bool build_split(const Program &p, const CFGraph &c,
                         const std::vector<char> &reach, const Live &L,
                         const std::vector<int> &exit_live, SplitMap &S,
-                        Adj &nadj) {
+                        Adj &nadj, bool want_adj = true,
+                        std::vector<std::vector<int>> *innode_out = nullptr,
+                        bool split_all = false,
+                        std::vector<std::vector<int>> *outnode_out = nullptr) {
     const OpSets &T = ub::S();
     int n = p.n;
     std::vector<Field> fm;
 
-    std::set<int> wide, used;
+    std::vector<char> wide((size_t)RZ, 0), usedf((size_t)RZ, 0);
     for (int i = 0; i < n; i++) {
         if (!p.q[i] || !reach[(size_t)i]) continue;
         fieldmap(p.q[i], p.op[i], p.props[i], fm);
-        fm_regs(fm, used);
         for (const Field &f : fm)
-            if (f.w > 1)
-                for (int k = 0; k < f.w; k++) wide.insert(f.base + k);
+            for (int k = 0; k < f.w; k++) {
+                int r = f.base + k;
+                if (r >= RZ) continue;
+                usedf[(size_t)r] = 1;
+                if (f.w > 1) wide[(size_t)r] = 1;
+            }
     }
-    std::set<int> pinset(exit_live.begin(), exit_live.end());
-    auto splittable = [&](int r) {
-        return r < RZ && !wide.count(r) && !pinset.count(r) && used.count(r);
-    };
+    std::vector<char> pinset((size_t)RZ, 0);
+    for (int r : exit_live) if (r >= 0 && r < RZ) pinset[(size_t)r] = 1;
+
+    std::vector<char> splitok((size_t)RZ, 0);
+    std::vector<int> used;
+    used.reserve((size_t)RZ);
+    for (int r = 0; r < RZ; r++) {
+        if (!usedf[(size_t)r]) continue;
+        used.push_back(r);
+        if (split_all || (!wide[(size_t)r] && !pinset[(size_t)r]))
+            splitok[(size_t)r] = 1;
+    }
+    auto splittable = [&](int r) { return r >= 0 && r < RZ && splitok[(size_t)r]; };
 
     const std::vector<Mask> &lin = L.live;
     std::vector<Mask> lout((size_t)n);
@@ -650,58 +811,145 @@ static bool build_split(const Program &p, const CFGraph &c,
         if (p.op[i] == T.O_Exit || p.op[i] == T.O_Ret) lout[(size_t)i] |= seed;
     }
 
-    std::unordered_map<int, std::vector<int>> innode, outnode;
-    std::vector<int> uf(2 * (size_t)n);
-    std::function<int(int)> find = [&](int x) {
+    static std::vector<std::vector<int>> s_innode, s_outnode;
+    std::vector<std::vector<int>> &innode = innode_out ? *innode_out : s_innode;
+    std::vector<std::vector<int>> &outnode = outnode_out ? *outnode_out : s_outnode;
+    if ((int)innode.size() < RZ) innode.resize((size_t)RZ);
+    if ((int)outnode.size() < RZ) outnode.resize((size_t)RZ);
+    for (auto &v : innode) v.clear();
+    for (auto &v : outnode) v.clear();
+    static std::vector<int> uf;
+    if (uf.size() < 2 * (size_t)n) uf.resize(2 * (size_t)n);
+
+    auto find = [](int x) {
         while (uf[(size_t)x] != x) {
             uf[(size_t)x] = uf[(size_t)uf[(size_t)x]];
             x = uf[(size_t)x];
         }
         return x;
     };
-    int next = SPLIT_NODE0;
-    int nsplit = 0;
-    for (int r : used) {
-        if (!splittable(r)) continue;
-        for (int i = 0; i < 2 * n; i++) uf[(size_t)i] = i;
+
+    static std::vector<std::vector<int>> lipt, lopt, dfpt;
+    if ((int)lipt.size() < RZ) {
+        lipt.resize((size_t)RZ); lopt.resize((size_t)RZ); dfpt.resize((size_t)RZ);
+    }
+    for (auto &v : lipt) v.clear();
+    for (auto &v : lopt) v.clear();
+    for (auto &v : dfpt) v.clear();
+
+    static std::vector<int> soff, sarr;
+    {
+        PerfScope ps_(&g_perf.x[40]);
+        soff.assign((size_t)n + 1, 0);
+        sarr.clear();
+
+        const int RW = (RZ + 63) / 64;
         for (int i = 0; i < n; i++) {
+            soff[(size_t)i] = (int)sarr.size();
             if (!reach[(size_t)i]) continue;
-            bool li = lin[(size_t)i].test(r), lo = lout[(size_t)i].test(r);
-            bool killed = L.dmask[(size_t)i].test(r) && !p.maydefs[i].has(r);
-            if (li && lo && !killed) {
-                int a = find(2 * i), b = find(2 * i + 1);
-                if (a != b) uf[(size_t)b] = a;
+            for (int t : c.succ[(size_t)i]) if (reach[(size_t)t]) sarr.push_back(t);
+            const u64 *wi = lin[(size_t)i].w, *wo = lout[(size_t)i].w;
+            const u64 *wd = L.dmask[(size_t)i].w;
+            for (int k = 0; k < RW; k++) {
+                u64 x = wi[k];
+                while (x) {
+                    int r = k * 64 + (int)__builtin_ctzll(x);
+                    x &= x - 1;
+                    if (r < RZ && splitok[(size_t)r]) lipt[(size_t)r].push_back(i);
+                }
+                u64 y = wo[k];
+                while (y) {
+                    int r = k * 64 + (int)__builtin_ctzll(y);
+                    y &= y - 1;
+                    if (r < RZ && splitok[(size_t)r]) lopt[(size_t)r].push_back(i);
+                }
+                u64 z = wd[k];
+                while (z) {
+                    int r = k * 64 + (int)__builtin_ctzll(z);
+                    z &= z - 1;
+                    if (r < RZ && splitok[(size_t)r]) dfpt[(size_t)r].push_back(i);
+                }
             }
         }
-        for (int i = 0; i < n; i++) {
-            if (!reach[(size_t)i] || !lout[(size_t)i].test(r)) continue;
-            for (int t : c.succ[(size_t)i]) {
-                if (!reach[(size_t)t] || !lin[(size_t)t].test(r)) continue;
+        soff[(size_t)n] = (int)sarr.size();
+    }
+
+    static std::vector<int> instamp, outstamp, defstamp;
+    static int pstamp = 0;
+    if ((int)instamp.size() < n) {
+        instamp.assign((size_t)n, -1);
+        outstamp.assign((size_t)n, -1);
+        defstamp.assign((size_t)n, -1);
+        pstamp = 0;
+    }
+
+    static std::vector<int> repnode, repstamp;
+    static int stamp = 0;
+    if (repnode.size() < 2 * (size_t)n) {
+        repnode.assign(2 * (size_t)n, 0);
+        repstamp.assign(2 * (size_t)n, -1);
+        stamp = 0;
+    }
+    int next = SPLIT_NODE0;
+    int nsplit = 0;
+    PerfSpan uf_span(&g_perf.x[41]);
+    for (int r : used) {
+        if (!splittable(r)) continue;
+        const std::vector<int> &LIp = lipt[(size_t)r], &LOp = lopt[(size_t)r];
+        pstamp++;
+        for (int i : LIp) { uf[(size_t)(2 * i)] = 2 * i; instamp[(size_t)i] = pstamp; }
+        for (int i : LOp) { uf[(size_t)(2 * i + 1)] = 2 * i + 1; outstamp[(size_t)i] = pstamp; }
+        for (int i : dfpt[(size_t)r]) defstamp[(size_t)i] = pstamp;
+        for (int i : LIp) {
+            if (outstamp[(size_t)i] != pstamp) continue;
+            if (defstamp[(size_t)i] == pstamp && !p.maydefs[i].has(r)) continue;
+            int a = find(2 * i), b = find(2 * i + 1);
+            if (a != b) uf[(size_t)b] = a;
+        }
+        for (int i : LOp) {
+            const int e0 = soff[(size_t)i], e1 = soff[(size_t)i + 1];
+            for (int e = e0; e < e1; e++) {
+                int t = sarr[(size_t)e];
+                if (instamp[(size_t)t] != pstamp) continue;
                 int a = find(2 * i + 1), b = find(2 * t);
                 if (a != b) uf[(size_t)b] = a;
             }
         }
-        std::unordered_map<int, int> rep2node;
+        int nnode = 0;
+        stamp++;
         std::vector<int> &vi = innode[r], &vo = outnode[r];
         vi.assign((size_t)n, -1);
         vo.assign((size_t)n, -1);
-        for (int i = 0; i < n; i++) {
-            if (!reach[(size_t)i]) continue;
-            if (lin[(size_t)i].test(r)) {
+
+        size_t ai = 0, ao = 0;
+        while (ai < LIp.size() || ao < LOp.size()) {
+            int i = ai < LIp.size()
+                        ? (ao < LOp.size() ? std::min(LIp[ai], LOp[ao]) : LIp[ai])
+                        : LOp[ao];
+            if (ai < LIp.size() && LIp[ai] == i) {
                 int rp = find(2 * i);
-                auto it = rep2node.find(rp);
-                if (it == rep2node.end()) it = rep2node.emplace(rp, next++).first;
-                vi[(size_t)i] = it->second;
+                if (repstamp[(size_t)rp] != stamp) {
+                    repstamp[(size_t)rp] = stamp;
+                    repnode[(size_t)rp] = next++;
+                    nnode++;
+                }
+                vi[(size_t)i] = repnode[(size_t)rp];
+                ai++;
             }
-            if (lout[(size_t)i].test(r)) {
+            if (ao < LOp.size() && LOp[ao] == i) {
                 int rp = find(2 * i + 1);
-                auto it = rep2node.find(rp);
-                if (it == rep2node.end()) it = rep2node.emplace(rp, next++).first;
-                vo[(size_t)i] = it->second;
+                if (repstamp[(size_t)rp] != stamp) {
+                    repstamp[(size_t)rp] = stamp;
+                    repnode[(size_t)rp] = next++;
+                    nnode++;
+                }
+                vo[(size_t)i] = repnode[(size_t)rp];
+                ao++;
             }
         }
-        if (rep2node.size() > 1) nsplit++;
+        if (nnode > 1) nsplit++;
     }
+    uf_span.stop();
     S.nsplit = nsplit;
     if (!nsplit) return false;
 
@@ -726,17 +974,27 @@ static bool build_split(const Program &p, const CFGraph &c,
         return v;
     };
 
+    PerfSpan fn_span(&g_perf.x[42]);
+    S.slots(n);
+    std::vector<int> ndlist;
     for (int i = 0; i < n; i++) {
         if (!p.q[i] || !reach[(size_t)i]) continue;
         fieldmap(p.q[i], p.op[i], p.props[i], fm);
         for (const Field &f : fm) {
             int nd = (f.kind == 'd') ? defnode(i, f.base) : usenode(i, f.base);
-            S.fnode[SplitMap::key(i, f.off)] = nd;
+            S.set(i, f.off, nd);
 
-            for (int k = 0; k < f.w; k++) S.nodes.insert(nd + k);
+            for (int k = 0; k < f.w; k++) ndlist.push_back(nd + k);
         }
     }
+
+    std::sort(ndlist.begin(), ndlist.end());
+    ndlist.erase(std::unique(ndlist.begin(), ndlist.end()), ndlist.end());
+    S.nodes.insert(ndlist.begin(), ndlist.end());
     S.nnodes = (int)S.nodes.size();
+    fn_span.stop();
+    if (!want_adj) return true;
+    PerfScope pif_(&g_perf.x[43]); g_perf.xn[43]++;
 
     nadj.clear();
     {
@@ -769,6 +1027,7 @@ static bool build_split(const Program &p, const CFGraph &c,
     std::vector<u64> LOm((size_t)NW, 0), LIm((size_t)NW, 0);
     std::vector<int> LOx, LIx;
     std::vector<int> bs, dd, md, LO, LI;
+    std::vector<int> dns;
     for (int i = 0; i < n; i++) {
         if (!reach[(size_t)i]) continue;
         LO.clear(); LI.clear();
@@ -798,7 +1057,7 @@ static bool build_split(const Program &p, const CFGraph &c,
 
         bool wideop = T.tex_bases[(size_t)p.op[i]] || p.op[i] == T.O_Shfl ||
                       mem_data_regs(p.q[i], p.op[i]) > 1;
-        std::vector<int> dns;
+        dns.clear();
         bool any_def = false, any_li_def = false;
         for (int pass = 0; pass < 2; pass++) {
             const std::vector<int> &V = pass ? md : dd;
@@ -1029,10 +1288,10 @@ static int maxgpr(const Program &p) {
 }
 
 bool g_bank = false;
-bool g_bank_force = false;
+bool g_bank_force = true;
 
 bool g_anti = false;
-bool g_anti_force = false;
+bool g_anti_force = true;
 
 bool g_grow = false;
 bool g_grow_bank = false;
@@ -1515,9 +1774,12 @@ bool web_map(const std::vector<u8> &bc_in, const std::vector<u8> &ct_in,
                 for (int k = 0; k < f.w; k++) wide.insert(f.base + k);
     }
     std::set<int> pinset(exit_live.begin(), exit_live.end());
-    auto splittable = [&](int r) {
-        return r < RZ && !wide.count(r) && !pinset.count(r) && used.count(r);
-    };
+
+    std::vector<char> splitok((size_t)RZ, 0);
+    for (int r : used)
+        if (r >= 0 && r < RZ && !wide.count(r) && !pinset.count(r))
+            splitok[(size_t)r] = 1;
+    auto splittable = [&](int r) { return r >= 0 && r < RZ && splitok[(size_t)r]; };
 
     const std::vector<Mask> &lin = L.live;
     std::vector<Mask> lout((size_t)n);
@@ -1532,9 +1794,10 @@ bool web_map(const std::vector<u8> &bc_in, const std::vector<u8> &ct_in,
         if (p.op[i] == T.O_Exit || p.op[i] == T.O_Ret) lout[(size_t)i] |= seed;
     }
 
-    std::unordered_map<int, std::vector<int>> innode, outnode;
+    std::vector<std::vector<int>> innode((size_t)RZ), outnode((size_t)RZ);
     std::vector<int> uf(2 * (size_t)n);
-    std::function<int(int)> find = [&](int x) {
+
+    auto find = [&uf](int x) {
         while (uf[(size_t)x] != x) {
             uf[(size_t)x] = uf[(size_t)uf[(size_t)x]];
             x = uf[(size_t)x];
@@ -1630,6 +1893,7 @@ bool web_map(const std::vector<u8> &bc_in, const std::vector<u8> &ct_in,
 }
 
 static const int RN_NCTR = 18;
+static_assert(TAIL_NCTR == RN_NCTR + 16, "tail_counters is RN_NCTR plus sixteen");
 static void rn_counters(long long *v) {
     long long src[RN_NCTR] = {
         g_rp_offered_n, g_rp_kept_n, g_rp_occ_n,
@@ -1661,10 +1925,11 @@ static std::map<std::string, RnEntry> g_rn_cache;
 void renumber_cache_clear() { g_rn_cache.clear(); }
 
 static void renumber_uncached(std::vector<u8> &bc, std::vector<u8> &ct,
-                              bool fragment, bool bank_aware, RegStats &st);
+                              bool fragment, bool bank_aware, RegStats &st,
+                              int need_warps);
 
 void renumber(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
-              bool bank_aware, RegStats &st) {
+              bool bank_aware, RegStats &st, int need_warps) {
     std::string key;
     key.reserve(bc.size() + ct.size() + 2);
     key.push_back(fragment ? 'F' : 'V');
@@ -1682,7 +1947,9 @@ void renumber(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
     }
     long long c0[RN_NCTR];
     rn_counters(c0);
-    renumber_uncached(bc, ct, fragment, bank_aware, st);
+    renumber_uncached(bc, ct, fragment, bank_aware, st, need_warps);
+
+    if (st.floored) return;
     RnEntry e;
     e.bc = bc;
     e.ct = ct;
@@ -1693,8 +1960,18 @@ void renumber(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
     g_rn_cache.emplace(std::move(key), std::move(e));
 }
 
+static void renumber_uncached_i(std::vector<u8> &bc, std::vector<u8> &ct,
+                              bool fragment, bool bank_aware, RegStats &st,
+                              int need_warps);
 static void renumber_uncached(std::vector<u8> &bc, std::vector<u8> &ct,
-                              bool fragment, bool bank_aware, RegStats &st) {
+                              bool fragment, bool bank_aware, RegStats &st,
+                              int need_warps) {
+    PerfScope ps_(&g_perf.x[28]);
+    renumber_uncached_i(bc, ct, fragment, bank_aware, st, need_warps);
+}
+static void renumber_uncached_i(std::vector<u8> &bc, std::vector<u8> &ct,
+                              bool fragment, bool bank_aware, RegStats &st,
+                              int need_warps) {
     Program p;
     { PerfScope ps_(&g_perf.x[0]); p.load_bytes(bc, ct); }
     u32 co = p.co;
@@ -1707,22 +1984,36 @@ static void renumber_uncached(std::vector<u8> &bc, std::vector<u8> &ct,
         g_icls.assign((size_t)nsl + 8, 0);
         std::vector<uint16_t> rsb((size_t)nsl + 8, 0), wsb((size_t)nsl + 8, 0);
         int got = 0;
+        PerfScope ps_(&g_perf.x[14]); g_perf.xn[14]++;
         if (ub_inst_class(bc.data(), co, nsl, g_icls.data(), rsb.data(),
                           wsb.data(), &got) < 0 || got != nsl)
             fail("renumber: ub_inst_class returned %d for %d slots", got, nsl);
     }
 
-    check_fieldmap(p);
+    { PerfScope ps_(&g_perf.x[15]); check_fieldmap(p); }
 
     CFGraph c;
-    c.build(p, false);
-    std::vector<char> reach = c.reachable_from_entry();
+    std::vector<char> reach;
+    { PerfScope ps_(&g_perf.x[16]);
+      c.build(p, false);
+      reach = c.reachable_from_entry(); }
 
     std::vector<int> exit_live;
     if (fragment) exit_live_regs(bc, exit_live);
 
     Live L;
     { PerfScope ps_(&g_perf.x[2]); liveness(p, c, reach, exit_live, L); }
+
+    int old_maxlive = 0;
+    for (int i = 0; i < p.n; i++)
+        if (reach[(size_t)i])
+            old_maxlive = std::max(old_maxlive, L.live[(size_t)i].popcount());
+    if (need_warps > 0 && occupancy_of(old_maxlive) < need_warps) {
+        st.floored = 1;
+        st.maxlive = old_maxlive;
+        return;
+    }
+
     Adj adj;
     { PerfScope ps_(&g_perf.x[3]); interference(p, reach, L, adj); }
 
@@ -1743,11 +2034,12 @@ static void renumber_uncached(std::vector<u8> &bc, std::vector<u8> &ct,
 
     std::set<int> used;
     std::vector<Field> fm;
+    { PerfScope ps_(&g_perf.x[19]);
     for (int i = 0; i < p.n; i++) {
         if (!p.q[i]) continue;
         fieldmap(p.q[i], p.op[i], p.props[i], fm);
         fm_regs(fm, used);
-    }
+    } }
     for (int r : used) adj[r];
 
     {
@@ -1792,17 +2084,37 @@ static void renumber_uncached(std::vector<u8> &bc, std::vector<u8> &ct,
         std::set<int> pin2;
         for (int r : exit_live) if (nodes.count(r)) pin2.insert(r);
         std::vector<std::vector<int>> runs;
-        runs_of(p, nodes, runs);
+        { PerfScope ps_(&g_perf.x[21]); g_perf.xn[21]++; runs_of(p, nodes, runs); }
+
+        Affinity aff;
+        if (g_coal) {
+            const OpSets &T = ub::S();
+            for (int i = 0; i < p.n; i++) {
+                if (!p.q[i] || !reach[(size_t)i] || p.op[i] != T.O_Mov) continue;
+                u64 q = p.q[i];
+                if (srcb_form(q) != FORM_REG) continue;
+                if (((q >> 16) & 0xF) != 7 || ((q >> 39) & 0xF) != 0xF) continue;
+                int d = (int)(q & 0xFF), s = (int)((q >> 20) & 0xFF);
+                if (d >= RZ || s >= RZ || d == s) continue;
+                int nd = usesplit ? S.at(i, 0) : d;
+                int ns = usesplit ? S.at(i, 20) : s;
+                if (nd < 0 || ns < 0 || nd == ns) continue;
+                if (!nodes.count(nd) || !nodes.count(ns)) continue;
+                aff.push_back({nd, ns});
+                g_coal_pairs++;
+            }
+        }
+        const Affinity *affp = aff.empty() ? nullptr : &aff;
         std::unordered_map<int, int> cmap;
         { PerfScope ps_(&g_perf.x[4]); g_perf.xn[4]++;
-          colour(runs, cadj, pin2, nullptr, -1, cmap, ORD_DEG); }
+          colour(runs, cadj, pin2, nullptr, -1, cmap, ORD_DEG, affp); }
         int corder = ORD_DEG;
         if (g_rp_colour) {
 
             for (int o = ORD_DEG + 1; o < ORD_N; o++) {
                 std::unordered_map<int, int> alt;
                 try {
-                    colour(runs, cadj, pin2, nullptr, -1, alt, o);
+                    colour(runs, cadj, pin2, nullptr, -1, alt, o, affp);
                 } catch (NoFit &) { continue; }
                 if (maxc(alt) < maxc(cmap)) { cmap.swap(alt); corder = o; }
             }
@@ -1831,7 +2143,7 @@ static void renumber_uncached(std::vector<u8> &bc, std::vector<u8> &ct,
             bool ok = true;
             try {
                 PerfScope ps_(&g_perf.x[7]); g_perf.xn[7]++;
-                colour(runs, cadj, pin2, &bconf, lim, cmap2, corder);
+                colour(runs, cadj, pin2, &bconf, lim, cmap2, corder, affp);
             } catch (NoFit &) { ok = false; }
             if (ok && (cmap2.empty() || maxc(cmap2) < lim)) {
                 cmap.swap(cmap2);
@@ -1851,17 +2163,30 @@ static void renumber_uncached(std::vector<u8> &bc, std::vector<u8> &ct,
             g_bank_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
             g_bank_calls++;
         }
+        std::vector<int> colof;
         auto emit_from = [&](std::unordered_map<int, int> &cm, Cand &o) {
             PerfScope ps_(&g_perf.x[10]); g_perf.xn[10]++;
-            for (auto &pr : cadj)
-                for (int b : pr.second)
-                    if (cm.at(pr.first) == cm.at(b))
+
+            int maxid = 0;
+            for (auto &pr : cm) maxid = std::max(maxid, pr.first);
+            colof.assign((size_t)maxid + 1, -1);
+            for (auto &pr : cm) colof[(size_t)pr.first] = pr.second;
+            for (auto &pr : cadj) {
+                int ca = pr.first <= maxid ? colof[(size_t)pr.first] : -1;
+                if (ca < 0) { (void)cm.at(pr.first); continue; }
+                for (int b : pr.second) {
+                    int cb2 = b <= maxid ? colof[(size_t)b] : -1;
+                    if (cb2 < 0) { (void)cm.at(b); continue; }
+                    if (ca == cb2)
                         fail("invalid colouring: interfering pair shares a register");
+                }
+            }
+            { PerfScope ps2_(&g_perf.x[23]);
             if (usesplit) apply_split(p, reach, S, cm, o.words);
             else {
                 apply_map(p, cm, o.words);
                 gate_operands(p, o.words, cm);
-            }
+            } }
             o.maxcol = maxc(cm);
             o.decl = (u32)std::max(o.maxcol + 1, 4);
             o.nruns = (int)runs.size();
@@ -1938,7 +2263,7 @@ static void renumber_uncached(std::vector<u8> &bc, std::vector<u8> &ct,
     std::set<int> namenodes = used;
     SplitMap none;
     Cand A;
-    build(false, none, namenodes, adj, A);
+    { PerfScope ps_(&g_perf.x[26]); build(false, none, namenodes, adj, A); }
 
     Cand B;
     SplitMap S;
@@ -1967,7 +2292,7 @@ static void renumber_uncached(std::vector<u8> &bc, std::vector<u8> &ct,
                     ++it;
                 }
             }
-            build(true, S, nodes, nadj, B);
+            { PerfScope ps_(&g_perf.x[27]); build(true, S, nodes, nadj, B); }
         }
     }
 
@@ -1986,10 +2311,6 @@ static void renumber_uncached(std::vector<u8> &bc, std::vector<u8> &ct,
     }
     st.rp_webs = B.have ? (int)S.nodes.size() : 0;
 
-    int old_maxlive = 0;
-    for (int i = 0; i < p.n; i++)
-        if (reach[(size_t)i])
-            old_maxlive = std::max(old_maxlive, L.live[(size_t)i].popcount());
     int old_max = maxgpr(p);
     u32 old_decl = ctl(p.ct)->mProgramRegNum;
 
@@ -2579,6 +2900,9 @@ static void analyse(const Program &p, CtlFacts &f) {
     const OpSets &T = S();
     const u8 *sph = p.bc.data() + SPH_OFF;
     f.fragment = (sph_get(sph, SPH_BITS_TYPE) == 2);
+    std::memset(f.imap_gen_read, 0, sizeof f.imap_gen_read);
+    f.imap_sys_read = 0;
+    f.imap_indexed = false;
 
     int max_gpr = -1, n_real = 0;
     bool kills = false, dls = false, dgs = false, fp64 = false;
@@ -2586,6 +2910,9 @@ static void analyse(const Program &p, CtlFacts &f) {
     bool local_indexed = false;
     std::vector<int> tex_order;
     int bindless = 0, back_edges = 0;
+    long long rate = 0;
+    int n_ipa = 0, ipa_addrs = 0;
+    u64 ipa_seen[16] = {0};
     std::vector<int> regs;
 
     for (int i = 0; i < p.n; i++) {
@@ -2595,6 +2922,30 @@ static void analyse(const Program &p, CtlFacts &f) {
         real_gprs(p, i, regs);
         for (int r : regs) if (r < 255 && r > max_gpr) max_gpr = r;
         if (nm == T.O_Kil) kills = true;
+
+        if (T.ctl_texs_fam[(size_t)nm] || T.ctl_tex_fam[(size_t)nm] ||
+            T.ctl_tex_bindless[(size_t)nm]) rate += 16;
+        else if (T.load_or_store[(size_t)nm]) rate += 8;
+        else if (T.rate_quarter[(size_t)nm]) rate += 4;
+        else if (T.rate_half[(size_t)nm]) rate += 2;
+        else if (nm != T.O_Nop) rate += 1;
+        if (nm == T.O_Ipa) {
+            n_ipa++;
+            int aa = (int)((p.q[i] >> 28) & 0x3FF);
+            if (!((ipa_seen[aa >> 6] >> (aa & 63)) & 1)) {
+                ipa_seen[aa >> 6] |= (u64)1 << (aa & 63);
+                ipa_addrs++;
+            }
+
+            u64 q = p.q[i];
+            int a = (int)((q >> 28) & 0x3FF);
+            if (((q >> 8) & 0xFF) != (u64)RZ) f.imap_indexed = true;
+            else if (a < IMAP_GENERIC_BASE) f.imap_sys_read |= (u32)1 << (a >> 2);
+            else if (a < IMAP_GENERIC_BASE + 32 * 16)
+                f.imap_gen_read[(size_t)((a - IMAP_GENERIC_BASE) >> 4)] |=
+                    (u8)(1 << ((a & 15) >> 2));
+            else f.imap_indexed = true;
+        }
         if (T.load_or_store[(size_t)nm]) dls = true;
         if (T.global_store[(size_t)nm]) dgs = true;
         if (T.fp64[(size_t)nm]) fp64 = true;
@@ -2630,6 +2981,9 @@ static void analyse(const Program &p, CtlFacts &f) {
     int slm_crs = (depth <= 16) ? 0 : ((depth * 16 + 512 + 511) & ~511);
 
     f.n_real = n_real;
+    f.rate_weight = rate;
+    f.n_ipa = n_ipa;
+    f.ipa_redundant = n_ipa - ipa_addrs;
     f.max_gpr = max_gpr;
     f.gpr_count = max_gpr + 1;
     f.slm_low = slm_low;
@@ -2680,6 +3034,19 @@ void pressure_facts(const std::vector<u8> &bc, const std::vector<u8> &ct,
         if (pc > 48) f.over48++;
         if (pc > 56) f.over56++;
     }
+
+    for (int i = 0; i < p.n; i++) {
+        if (!p.q[i] || !reach[(size_t)i] || p.op[i] != S().O_Mov) continue;
+        u64 q = p.q[i];
+        int src = (int)((q >> 20) & 0xFF), dst = (int)(q & 0xFF);
+        if (src >= RZ || ((q >> 16) & 0xF) != 7 || src == dst) continue;
+        f.mov_rr++;
+        bool live_out = false;
+        for (int t : c.succ[(size_t)i])
+            if (reach[(size_t)t] && L.live[(size_t)t].test(src)) live_out = true;
+        if (live_out) f.mov_srclive++; else f.mov_srcdead++;
+    }
+
 
     std::set<int> used;
     std::vector<int> ureg;
@@ -2742,6 +3109,30 @@ void pressure_facts(const std::vector<u8> &bc, const std::vector<u8> &ct,
     }
 }
 
+bool g_imap_trim = true;
+static void imap_trim(u8 *sph, CtlFacts &f) {
+    u8 *gv = sph + SPH_IMAP_GENERIC_OFF;
+    u32 sv;
+    std::memcpy(&sv, sph + SPH_IMAP_SYSVALS_OFF, 4);
+    int declared = 0, kept = 0;
+    for (int loc = 0; loc < 32; loc++) {
+        u8 keep = 0;
+        for (int c = 0; c < 4; c++) {
+            if ((gv[loc] >> (2 * c)) & 3) declared++;
+            if ((f.imap_gen_read[(size_t)loc] >> c) & 1) keep |= (u8)(3 << (2 * c));
+        }
+        if (!f.imap_indexed) gv[loc] &= keep;
+        for (int c = 0; c < 4; c++) if ((gv[loc] >> (2 * c)) & 3) kept++;
+    }
+    declared += __builtin_popcount(sv);
+
+    if (!f.imap_indexed) sv &= f.imap_sys_read | ((u32)1 << NvSysval_PositionW);
+    kept += __builtin_popcount(sv);
+    std::memcpy(sph + SPH_IMAP_SYSVALS_OFF, &sv, 4);
+    f.imap_declared = declared;
+    f.imap_kept = kept;
+}
+
 void control_rewrite(std::vector<u8> &bc, std::vector<u8> &ct, CtlFacts &f) {
     Program p;
     p.load_bytes(bc, ct);
@@ -2756,6 +3147,7 @@ void control_rewrite(std::vector<u8> &bc, std::vector<u8> &ct, CtlFacts &f) {
     sph_set(sph, SPH_BITS_LOCAL_MEM_LO_SZ, (u64)f.slm_low);
     sph_set(sph, SPH_BITS_LOCAL_MEM_HI_SZ, (u64)f.slm_high);
     sph_set(sph, SPH_BITS_LOCAL_MEM_CRS_SZ, (u64)f.slm_crs);
+    if (f.fragment && g_imap_trim) imap_trim(sph, f);
 
     NVNshaderControl *c = ctl(ct);
     c->debugBuildId[0] = UBERSPEC_STAMP_MAGIC;
@@ -3024,6 +3416,1770 @@ void verify(const std::vector<u8> &bc, const std::vector<u8> &ct, bool run_v8,
                  "%d texture op(s), %d with an RZ coordinate source%s",
                  ntex, bad14, where.c_str());
         R.add("V14 tex operands", bad14 == 0, buf);
+    }
+
+    {
+        const u8 *sph = bc.data() + SPH_OFF;
+        bool frag = sph_get(sph, SPH_BITS_TYPE) == NvSphType_PS;
+        u32 sv;
+        std::memcpy(&sv, sph + SPH_IMAP_SYSVALS_OFF, 4);
+        int nipa = 0, undeclared = 0, indexed = 0, declared = 0;
+        for (int i : real) {
+            if (p.op[i] != T.O_Ipa) continue;
+            nipa++;
+            u64 q = p.q[i];
+            int a = (int)((q >> 28) & 0x3FF);
+            if (((q >> 8) & 0xFF) != (u64)RZ) { indexed++; continue; }
+            bool ok = true;
+            if (a < IMAP_GENERIC_BASE) ok = (sv >> (a >> 2)) & 1;
+            else if (a < IMAP_GENERIC_BASE + 32 * 16)
+                ok = (sph[SPH_IMAP_GENERIC_OFF + ((a - IMAP_GENERIC_BASE) >> 4)] >>
+                      (2 * ((a & 15) >> 2))) & 3;
+            if (!ok) undeclared++;
+        }
+        for (int loc = 0; loc < 32; loc++)
+            for (int c = 0; c < 4; c++)
+                if ((sph[SPH_IMAP_GENERIC_OFF + loc] >> (2 * c)) & 3) declared++;
+        declared += __builtin_popcount(sv);
+
+        bool posw = (sv >> NvSysval_PositionW) & 1;
+        if (!frag) {
+            R.add("V15 imap inputs", true, "NOT RUN -- not a pixel shader");
+        } else {
+            snprintf(buf, sizeof buf,
+                     "%d IPA(s), %d declared component(s), %d read but undeclared, "
+                     "%d register-indexed%s", nipa, declared, undeclared, indexed,
+                     posw ? "" : ", PositionW undeclared");
+            R.add("V15 imap inputs", undeclared == 0 && posw, buf);
+        }
+    }
+}
+
+bool g_anticopy = false, g_anticopy_force = false;
+long long g_ac_rows = 0, g_ac_kept = 0, g_ac_copies = 0, g_ac_sites = 0,
+          g_ac_calls = 0;
+
+long long g_ac_budget = -1;
+long long g_ac_declined = 0;
+
+long long g_ac_ladder = 0;
+
+static const u64 AC_W_NOP = 0x50b0000000070f00ull;
+static const u64 AC_MOV_TMPL = 0x5c9807800ff70000ull;
+
+extern "C" {
+int ub_anticopy_probe(const unsigned char *bc, unsigned int constOff, int nreal,
+                      int memdeps, const unsigned char *pdefs,
+                      const unsigned char *puses, int *o_slot, int *o_reg,
+                      int *o_bs, int *o_be, int *o_cnt, int maxo);
+void ub_set_webs(const int *wuse, const int *wdef, int stride);
+}
+
+void anticopy(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
+              AnticopyStats &st) {
+    const OpSets &T = S();
+    u32 co = const_off(ct);
+    if (co > bc.size()) fail("anticopy: ConstBufOffset past the file");
+    int n = 3 * ((int)co - INSTR_START) / 32;
+    if (n <= 0) return;
+    g_ac_calls++;
+    Program p;
+    p.load_bytes(bc, ct);
+    int nreal = 0;
+    for (int k = 0; k < n && k < p.n; k++) if (p.q[k]) nreal = k + 1;
+    if (nreal <= 0) return;
+
+    std::vector<u8> pdefs, puses;
+    pred_masks(p, n, pdefs, puses);
+    std::vector<int> wuse, wdef;
+    int wn = 0;
+    if (!web_map(bc, ct, fragment, wuse, wdef, wn) || wn != n) return;
+    std::vector<int> o_slot((size_t)n), o_reg((size_t)n), o_bs((size_t)n),
+                     o_be((size_t)n), o_cnt((size_t)n);
+    ub_set_webs(wuse.data(), wdef.data(), WEB_STRIDE);
+    int ns = ub_anticopy_probe(bc.data(), co, nreal, 1, pdefs.data(),
+                               puses.data(), o_slot.data(), o_reg.data(),
+                               o_bs.data(), o_be.data(), o_cnt.data(), n);
+    ub_set_webs(nullptr, nullptr, 0);
+    if (ns <= 0) return;
+    st.sites = ns;
+    g_ac_sites += ns;
+
+    CFGraph c;
+    c.build(p, false);
+    std::vector<char> reach = c.reachable_from_entry();
+    std::vector<int> exit_live;
+    if (fragment) exit_live_regs(bc, exit_live);
+    Live L;
+    liveness(p, c, reach, exit_live, L);
+    std::set<int> pinset(exit_live.begin(), exit_live.end());
+
+    std::vector<int> npred((size_t)p.n, 0), onepred((size_t)p.n, -1);
+    for (int i = 0; i < p.n; i++) {
+        if (!reach[(size_t)i]) continue;
+        for (int t : c.succ[(size_t)i])
+            if (t >= 0 && t < p.n) { npred[(size_t)t]++; onepred[(size_t)t] = i; }
+    }
+    std::vector<std::vector<Field>> fms((size_t)p.n);
+    std::set<int> wide;
+    for (int i = 0; i < p.n; i++) {
+        if (!p.q[i] || !reach[(size_t)i]) continue;
+        fieldmap(p.q[i], p.op[i], p.props[i], fms[(size_t)i]);
+        for (const Field &f : fms[(size_t)i])
+            if (f.w > 1)
+                for (int k = 0; k < f.w; k++) wide.insert(f.base + k);
+    }
+
+    struct Site { int slot, cnt; };
+    std::map<std::pair<int, int>, std::vector<Site>> groups;
+    std::map<int, int> bend;
+    for (int k = 0; k < ns; k++) {
+        groups[std::make_pair(o_bs[(size_t)k], o_reg[(size_t)k])]
+            .push_back({o_slot[(size_t)k], o_cnt[(size_t)k]});
+        bend[o_bs[(size_t)k]] = o_be[(size_t)k];
+    }
+
+    struct Plan { int bs, lo, hi, reg, fresh, cnt; bool copy; };
+    std::vector<Plan> plans;
+    std::map<int, std::set<int>> taken;
+    auto is_free = [&](int cand, int lo, int hi) {
+        for (int i = lo; i <= hi; i++) {
+            if (!reach[(size_t)i]) continue;
+            if (L.live[(size_t)i].test(cand) || L.dmask[(size_t)i].test(cand) ||
+                L.umask[(size_t)i].test(cand)) return false;
+        }
+        for (int sc : c.succ[(size_t)hi])
+            if (sc >= 0 && sc < p.n && L.live[(size_t)sc].test(cand)) return false;
+        return true;
+    };
+    for (auto &pr : groups) {
+        int bs = pr.first.first, r = pr.first.second, be = bend[bs];
+        std::vector<Site> &ss = pr.second;
+        if (r < 0 || r >= RZ || bs < 0 || be > p.n || !reach[(size_t)bs]) {
+            st.skip_shape++; continue;
+        }
+
+        bool ok = true;
+        for (int i = bs + 1; i < be && ok; i++) {
+            if (!p.q[i]) continue;
+            if (npred[(size_t)i] != 1 || onepred[(size_t)i] != i - 1) ok = false;
+        }
+        if (!ok) { st.skip_cfg++; continue; }
+
+        std::vector<int> D;
+        std::vector<char> widedef((size_t)p.n, 0), wideuse((size_t)p.n, 0);
+        for (int i = bs; i < be; i++) {
+            if (!p.q[i]) continue;
+            for (const Field &f : fms[(size_t)i]) {
+                bool hit = (r >= f.base && r < f.base + f.w);
+                if (!hit) continue;
+                if (f.w > 1) {
+                    if (f.kind == 'd') widedef[(size_t)i] = 1; else wideuse[(size_t)i] = 1;
+                }
+                if (f.kind == 'd' && !p.guarded(i)) D.push_back(i);
+            }
+        }
+        if (D.empty()) {
+            st.skip_shape++; continue;
+        }
+        int k = (int)D.size();
+
+        auto narrow = [&](int lo, int hi, bool copy) {
+            for (int i = lo; i <= hi; i++) {
+                if (!p.q[i]) continue;
+                if (i == lo && !copy) { if (widedef[(size_t)i]) return false; continue; }
+                if (i == hi) { if (wideuse[(size_t)i]) return false; continue; }
+                if (widedef[(size_t)i] || wideuse[(size_t)i]) return false;
+            }
+            return true;
+        };
+
+        std::map<int, int> want;
+        for (const Site &sv : ss) {
+            int j = -1;
+            for (int q = 0; q < k; q++) if (D[(size_t)q] == sv.slot) { j = q + 1; break; }
+            if (j < 0) { st.skip_shape++; continue; }
+            if (j == 1) want[k >= 2 ? 1 : 0] += sv.cnt;
+            else want[j - 1] += sv.cnt;
+        }
+        for (auto &w : want) {
+            int j = w.first, lo, hi;
+            bool copy = (j == 0);
+            if (copy) {
+                if (!L.live[(size_t)bs].test(r)) { st.skip_shape++; continue; }
+                lo = bs; hi = D[0];
+            } else {
+                lo = D[(size_t)(j - 1)]; hi = D[(size_t)j];
+            }
+            if (!narrow(lo, hi, copy)) {
+                st.skip_shape++; continue;
+            }
+            std::set<int> &tk = taken[bs];
+            int fresh = -1;
+            for (int cand = 0; cand < RZ && fresh < 0; cand++) {
+                if (pinset.count(cand) || wide.count(cand) || tk.count(cand)) continue;
+                if (is_free(cand, lo, hi)) fresh = cand;
+            }
+            if (fresh < 0) { st.skip_reg++; continue; }
+            tk.insert(fresh);
+            plans.push_back({bs, lo, hi, r, fresh, w.second, copy});
+        }
+    }
+    if (plans.empty()) return;
+
+    {
+        std::vector<Plan> cp, loc;
+        for (const Plan &pl : plans) (pl.copy ? cp : loc).push_back(pl);
+        std::sort(cp.begin(), cp.end(),
+                  [](const Plan &a, const Plan &b) { return a.cnt > b.cnt; });
+        int cur_pad = (3 - nreal % 3) % 3;
+        size_t keep = cp.size();
+        for (size_t kk = cp.size(); kk + 3 > cp.size() && kk > 0; kk--) {
+            int pad = (3 - (int)((nreal + (int)kk) % 3)) % 3;
+            if (pad <= cur_pad) { keep = kk; break; }
+        }
+        if (cp.size() && keep == cp.size()) {
+            int pad = (3 - (int)((nreal + (int)keep) % 3)) % 3;
+            if (pad > cur_pad && cp.size() <= 2) keep = 0;
+        }
+        st.trimmed = (int)(cp.size() - keep);
+        cp.resize(keep);
+        plans = loc;
+        plans.insert(plans.end(), cp.begin(), cp.end());
+    }
+    if (plans.empty()) return;
+    if (g_ac_budget >= 0) {
+
+        std::stable_sort(plans.begin(), plans.end(),
+                         [](const Plan &a, const Plan &b) {
+                             if (a.copy != b.copy) return !a.copy;
+                             return a.cnt > b.cnt;
+                         });
+        if ((long long)plans.size() > g_ac_budget) plans.resize((size_t)g_ac_budget);
+        g_ac_budget -= (long long)plans.size();
+    }
+    if (plans.empty()) return;
+
+    std::vector<u64> words((size_t)nreal);
+    for (int kk = 0; kk < nreal; kk++)
+        std::memcpy(&words[(size_t)kk], bc.data() + slot_off(kk), 8);
+    int ncopy = 0;
+    for (const Plan &pl : plans) {
+        if (pl.copy) ncopy++;
+        for (int i = pl.lo; i <= pl.hi; i++) {
+            if (!p.q[i]) continue;
+            u64 q = words[(size_t)i];
+            for (const Field &f : fms[(size_t)i]) {
+                if (f.base != pl.reg || f.w != 1) continue;
+                if (i == pl.hi && f.kind == 'd') continue;
+                if (i == pl.lo && !pl.copy && f.kind == 'u') continue;
+                q = set_field8(q, f.off, pl.fresh);
+            }
+            words[(size_t)i] = q;
+        }
+    }
+
+    std::multimap<int, u64> ins;
+    for (const Plan &pl : plans)
+        if (pl.copy)
+            ins.emplace(pl.bs, set_field8(set_field8(AC_MOV_TMPL, 0, pl.fresh), 20, pl.reg));
+    std::vector<u64> out;
+    std::vector<int> oldof, leadpos((size_t)nreal + 1, -1);
+    for (int kk = 0; kk < nreal; kk++) {
+        auto range = ins.equal_range(kk);
+        for (auto it = range.first; it != range.second; ++it) {
+            if (leadpos[(size_t)kk] < 0) leadpos[(size_t)kk] = (int)out.size();
+            out.push_back(it->second);
+            oldof.push_back(-1);
+        }
+        if (leadpos[(size_t)kk] < 0) leadpos[(size_t)kk] = (int)out.size();
+        out.push_back(words[(size_t)kk]);
+        oldof.push_back(kk);
+    }
+    leadpos[(size_t)nreal] = (int)out.size();
+    while (out.size() % 3) { out.push_back(AC_W_NOP); oldof.push_back(-1); }
+    for (size_t kk = 0; kk < oldof.size(); kk++) {
+        int i2 = oldof[kk];
+        if (i2 < 0 || i2 >= p.n || !p.q[i2]) continue;
+        if (!T.branchy_imm[(size_t)p.op[i2]]) continue;
+        int t = p.target(i2);
+        if (t < 0 || t > nreal) fail("anticopy: unresolved branch at slot %d", i2);
+        int nt = leadpos[(size_t)t];
+        int disp = slot_rel(nt) - (slot_rel((int)kk) + 8);
+        if (!branch_disp_ok(disp)) fail("anticopy: branch displacement out of range");
+        out[kk] = setbits(out[kk], 20, 24, (u64)(u32)disp & 0xFFFFFF);
+    }
+    size_t blobsz = bc.size() - (size_t)co;
+    size_t nb = out.size() / 3;
+    u32 co2 = (u32)(INSTR_START + nb * 32);
+    co2 = (co2 + CBUF_ALIGN - 1) / CBUF_ALIGN * CBUF_ALIGN;
+    std::vector<u8> obc((size_t)co2 + blobsz, 0);
+    std::memcpy(obc.data(), bc.data(), INSTR_START);
+    for (size_t kk = 0; kk < out.size(); kk++)
+        std::memcpy(obc.data() + slot_off(kk), &out[kk], 8);
+    if (blobsz) std::memcpy(obc.data() + co2, bc.data() + co, blobsz);
+    NVNshaderControl *oc = ctl(ct);
+    oc->mProgramSize = (u32)(SPH_SIZE + nb * 32);
+    oc->mConstBufOffset = co2;
+    oc->mShaderSize = (u32)obc.size();
+    phase_b(obc, co2);
+    int ns2 = 3 * ((int)co2 - INSTR_START) / 32;
+    if (!slots_ok(ns2))
+        fail("anticopy: padded instruction count %d is not 12 mod 24", ns2);
+    bc.swap(obc);
+    st.applied = (int)plans.size();
+    st.copies = ncopy;
+    g_ac_copies += ncopy;
+}
+
+void tail_counters(long long *v) {
+    rn_counters(v);
+    const long long rest[TAIL_NCTR - RN_NCTR] = {
+        g_dce2_dead, g_dce2_self, g_dce2_calls, g_dce2_rev,
+        g_dce2_notrunc, g_dce2_badtrunc,
+        g_texnarrow_sites, g_texnarrow_progs, g_texnarrow_calls,
+        g_ac_rows, g_ac_kept, g_ac_copies, g_ac_sites, g_ac_calls,
+        g_ac_declined, g_ac_ladder};
+    for (int i = 0; i < TAIL_NCTR - RN_NCTR; i++) v[RN_NCTR + i] = rest[i];
+}
+void tail_counters_add(const long long *d) {
+    rn_counters_add(d);
+    long long *const dst[TAIL_NCTR - RN_NCTR] = {
+        &g_dce2_dead, &g_dce2_self, &g_dce2_calls, &g_dce2_rev,
+        &g_dce2_notrunc, &g_dce2_badtrunc,
+        &g_texnarrow_sites, &g_texnarrow_progs, &g_texnarrow_calls,
+        &g_ac_rows, &g_ac_kept, &g_ac_copies, &g_ac_sites, &g_ac_calls,
+        &g_ac_declined, &g_ac_ladder};
+    for (int i = 0; i < TAIL_NCTR - RN_NCTR; i++) *dst[i] += d[RN_NCTR + i];
+}
+
+bool g_sink = false;
+int g_sink_back = 2;
+int g_sink_rounds = 32;
+int g_sink_ext = 1;
+
+static bool sink_movable(const Program &p, int i) {
+    const OpSets &T = S();
+    static OpSet allow;
+    static bool init = false;
+    if (!init) {
+        init = true;
+        allow = make_opset({
+            "Mov", "Mov32i", "Ldc", "Sel", "Rro", "Mufu", "Ipa",
+            "Fadd", "Fadd32i", "Ffma", "Fmul", "Fmul32i", "Fmnmx",
+            "Iadd", "Iadd3", "Iadd32i", "Imnmx", "Iscadd",
+            "Lop", "Lop3", "Lop32i", "Shl", "Shr", "Shf", "Bfe", "Bfi",
+            "Xmad", "Imad", "Prmt", "F2f", "F2i", "I2f", "I2i"});
+    }
+    int nm = p.op[i];
+    u64 q = p.q[i];
+    if (nm < 0 || !allow[(size_t)nm]) return false;
+    if (T.side_effect[(size_t)nm] || T.branchy[(size_t)nm] ||
+        T.pushy[(size_t)nm] || T.tex_bases[(size_t)nm]) return false;
+    if (nm == T.O_Ldc) { if (((q >> 8) & 0xFF) != RZ) return false; }
+    else if (T.load_or_store[(size_t)nm]) return false;
+    if (((q >> 16) & 0xF) != 7) return false;
+    if (nm == T.O_Mov && ((q >> 39) & 0xF) != 0xF) return false;
+    return true;
+}
+
+long long g_spill_ok = 0, g_remat_ok = 0;
+static bool sink_round_i(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
+                       SinkStats &st);
+static bool sink_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
+                       SinkStats &st) {
+    PerfScope ps_(&g_perf.x[30]); g_perf.xn[30]++;
+    bool r_ = sink_round_i(bc, ct, fragment, st);
+    if (r_) g_perf.xn[39]++;
+    return r_;
+}
+static bool sink_round_i(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
+                       SinkStats &st) {
+    const OpSets &T = S();
+    u32 co = const_off(ct);
+    if (co > bc.size()) fail("sink: ConstBufOffset past the file");
+    int n = 3 * ((int)co - INSTR_START) / 32;
+    if (n <= 0) return false;
+    Program p;
+    p.load_bytes(bc, ct);
+    if (dce2_reads_cc(p)) return false;
+    int nreal = 0;
+    for (int k = 0; k < n && k < p.n; k++) if (p.q[k]) nreal = k + 1;
+    if (nreal <= 0) return false;
+    CFGraph c;
+    std::vector<char> reach;
+    std::vector<int> exit_live;
+    std::vector<char> is_exit((size_t)RZ, 0);
+    Live L;
+    { PerfScope ps_(&g_perf.x[35]);
+    c.build(p, false);
+    reach = c.reachable_from_entry();
+    if (fragment) exit_live_regs(bc, exit_live);
+    for (int r : exit_live) if (r >= 0 && r < RZ) is_exit[(size_t)r] = 1;
+    liveness(p, c, reach, exit_live, L); }
+
+    std::vector<char> leader((size_t)nreal + 1, 0);
+    leader[0] = 1;
+    for (int i = 0; i < nreal; i++) {
+        if (!p.q[i] || !reach[(size_t)i]) continue;
+        bool falls = false;
+        for (int t : c.succ[(size_t)i]) {
+            if (t == i + 1) falls = true;
+            else if (t >= 0 && t < nreal) leader[(size_t)t] = 1;
+        }
+        if ((!falls || c.succ[(size_t)i].size() > 1) && i + 1 < nreal)
+            leader[(size_t)i + 1] = 1;
+    }
+
+    PerfSpan dom_span(&g_perf.x[36]);
+    int W = 0;
+    std::vector<u64> dom;
+    { PerfScope ps_(&g_perf.x[31]);
+      if (!dominators(c, reach, nreal, W, dom))
+          fail("sink: the dominator fixpoint did not converge"); }
+    auto has = [&](const std::vector<u64> &v, int row, int b) {
+        return (v[(size_t)row * W + (b >> 6)] >> (b & 63)) & 1;
+    };
+
+    std::vector<char> in_cycle;
+    cycle_nodes(c, reach, nreal, in_cycle);
+
+    int maxlive = 0;
+    std::vector<int> lpc((size_t)nreal, -1);
+    for (int i = 0; i < nreal; i++)
+        if (p.q[i] && reach[(size_t)i]) {
+            lpc[(size_t)i] = L.live[(size_t)i].popcount();
+            maxlive = std::max(maxlive, lpc[(size_t)i]);
+        }
+    if (st.maxlive0 < 0) st.maxlive0 = maxlive;
+    std::vector<char> peak((size_t)nreal, 0);
+    for (int i = 0; i < nreal; i++)
+        if (lpc[(size_t)i] >= maxlive - 1 && lpc[(size_t)i] >= 0)
+            peak[(size_t)i] = 1;
+
+    std::vector<int> blk((size_t)nreal, -1), bstart, bend;
+    for (int i = 0; i < nreal; i++) {
+        if (leader[(size_t)i] || bstart.empty()) { bstart.push_back(i); bend.push_back(i); }
+        blk[(size_t)i] = (int)bstart.size() - 1;
+        bend.back() = i;
+    }
+    const int NB = (int)bstart.size();
+    const int BW = (NB + 63) / 64;
+    std::vector<std::vector<int>> bsucc((size_t)NB);
+    for (int b = 0; b < NB; b++) {
+        if (!reach[(size_t)bstart[(size_t)b]]) continue;
+        for (int t : c.succ[(size_t)bend[(size_t)b]])
+            if (t >= 0 && t < nreal && reach[(size_t)t]) bsucc[(size_t)b].push_back(blk[(size_t)t]);
+    }
+
+    std::vector<u64> fwd((size_t)NB * BW, 0), bwd((size_t)NB * BW, 0);
+    auto rowhas = [&](const std::vector<u64> &v, int b, int x) {
+        return (v[(size_t)b * BW + (x >> 6)] >> (x & 63)) & 1;
+    };
+    for (int b = 0; b < NB; b++)
+        for (int s : bsucc[(size_t)b]) fwd[(size_t)b * BW + (s >> 6)] |= (u64)1 << (s & 63);
+    for (bool ch = true; ch;) {
+        ch = false;
+        for (int b = NB - 1; b >= 0; b--)
+            for (int s : bsucc[(size_t)b])
+                for (int w = 0; w < BW; w++) {
+                    u64 nv = fwd[(size_t)b * BW + w] | fwd[(size_t)s * BW + w];
+                    if (nv != fwd[(size_t)b * BW + w]) { fwd[(size_t)b * BW + w] = nv; ch = true; }
+                }
+    }
+    for (int a = 0; a < NB; a++)
+        for (int b = 0; b < NB; b++)
+            if (rowhas(fwd, a, b)) bwd[(size_t)b * BW + (a >> 6)] |= (u64)1 << (a & 63);
+
+    auto fwd_in = [&](int i, int j) {
+        int bi = blk[(size_t)i], bj = blk[(size_t)j];
+        return bi == bj ? j > i : (bool)rowhas(fwd, bi, bj);
+    };
+    auto bwd_in = [&](int t, int j) {
+        int bt = blk[(size_t)t], bj = blk[(size_t)j];
+        return bt == bj ? j < t : (bool)rowhas(bwd, bt, bj);
+    };
+    dom_span.stop();
+
+    std::vector<std::vector<int>> touch((size_t)PREG + 8), wtouch((size_t)PREG + 8);
+    {
+        PerfScope ps_(&g_perf.x[37]);
+        std::vector<int> tl;
+        for (int j = 0; j < nreal; j++) {
+            if (!reach[(size_t)j]) continue;
+            p.uses[j].list(tl);
+            for (int r : tl) touch[(size_t)r].push_back(j);
+            p.defs[j].list(tl);
+            for (int r : tl) {
+                wtouch[(size_t)r].push_back(j);
+                if (!p.uses[j].has(r)) touch[(size_t)r].push_back(j);
+            }
+            p.maydefs[j].list(tl);
+            for (int r : tl) {
+                if (!p.defs[j].has(r)) wtouch[(size_t)r].push_back(j);
+                if (!p.uses[j].has(r) && !p.defs[j].has(r)) touch[(size_t)r].push_back(j);
+            }
+        }
+    }
+
+    st.r_shape = st.r_loop = st.r_nodom = st.r_near = st.r_clob = st.r_nocross = st.r_ext = 0;
+    std::vector<int> target((size_t)nreal, -1);
+    std::vector<std::vector<int>> mrefs((size_t)nreal);
+    std::vector<int> dl, ml, ul, refs;
+    std::vector<u64> common((size_t)W);
+    int moved = 0;
+    std::vector<int> peakpts;
+    for (int i = 0; i < nreal; i++) if (peak[(size_t)i]) peakpts.push_back(i);
+    int d = -1, lo = -1, best = -1, t2 = -1;
+
+    auto trace = [&](int, const char *) {
+    };
+    PerfSpan loop_span(&g_perf.x[38]);
+    for (int i = 0; i < nreal; i++) {
+        if (!p.q[i] || !reach[(size_t)i] || !sink_movable(p, i)) continue;
+        p.defs[i].list(dl);
+        p.maydefs[i].list(ml);
+        p.uses[i].list(ul);
+        d = -1; lo = -1; best = -1; t2 = -1;
+        if (dl.size() != 1 || !ml.empty()) { st.r_shape++; continue; }
+        d = dl[0];
+        if (d < 0 || d >= RZ || is_exit[(size_t)d]) { st.r_shape++; continue; }
+        bool selfsrc = false;
+        for (int s : ul) if (s == d) selfsrc = true;
+        if (selfsrc) { st.r_shape++; trace(i, "selfsrc"); continue; }
+        st.cands++;
+
+        const int bi = blk[(size_t)i];
+        if (rowhas(fwd, bi, bi)) { st.r_loop++; trace(i, "loop"); continue; }
+        refs.clear();
+        for (int j : touch[(size_t)d]) if (fwd_in(i, j)) refs.push_back(j);
+        if (refs.empty()) { st.r_loop++; trace(i, "norefs"); continue; }
+
+        best = -1;
+        lo = refs[0];
+        for (int r : refs) if (r < lo) lo = r;
+
+        if (lo <= i) { st.r_nodom++; trace(i, "nodom"); continue; }
+        const int w0 = i >> 6, w1 = lo >> 6;
+        for (int w = w0; w <= w1; w++) common[(size_t)w] = ~(u64)0;
+        for (int r : refs) {
+            const u64 *drow = &dom[(size_t)r * W];
+            for (int w = w0; w <= w1; w++) common[(size_t)w] &= drow[w];
+        }
+        for (int t = lo; t > i; t--) {
+            u64 word = common[(size_t)(t >> 6)] & (((u64)2 << (t & 63)) - 1);
+            if (!word) { t = (t & ~63); continue; }
+            t = (t & ~63) + 63 - __builtin_clzll(word);
+            if (t <= i) break;
+            if (!reach[(size_t)t] || in_cycle[(size_t)t]) continue;
+            if (!has(dom, t, i)) continue;
+            best = t;
+            break;
+        }
+        if (best < 0) { st.r_nodom++; trace(i, "nodom"); continue; }
+
+        t2 = best;
+        for (int k = 0; k < g_sink_back && t2 > i + 1 && !leader[(size_t)t2]; k++) t2--;
+        if (t2 <= i + 1) { st.r_near++; trace(i, "near"); continue; }
+        {
+
+            auto between = [&](int j) { return fwd_in(i, j) && bwd_in(t2, j); };
+            bool clob = false;
+            for (int j : touch[(size_t)d]) if (between(j)) { clob = true; break; }
+            for (size_t k = 0; k < ul.size() && !clob; k++)
+                for (int j : wtouch[(size_t)ul[k]]) if (between(j)) { clob = true; break; }
+            if (clob) { st.r_clob++; trace(i, "clob"); continue; }
+            bool crosses = false;
+            for (int x : peakpts) if (between(x)) { crosses = true; break; }
+            if (!crosses) { st.r_nocross++; trace(i, "nocross"); continue; }
+
+            int ext = 0;
+            for (int s : ul)
+                if (s >= 0 && s < RZ && !L.live[(size_t)t2].test(s)) ext++;
+            if (ext > g_sink_ext) { st.r_ext++; trace(i, "ext"); continue; }
+        }
+        target[(size_t)i] = t2;
+        mrefs[(size_t)i] = refs;
+        moved++;
+        st.moved++;
+        st.slots += t2 - i;
+    }
+
+    for (bool again = true; again;) {
+        again = false;
+        for (int i = 0; i < nreal; i++) {
+            if (target[(size_t)i] < 0) continue;
+            for (int r : mrefs[(size_t)i]) {
+                if (target[(size_t)r] < 0) continue;
+                if (target[(size_t)r] < target[(size_t)i] ||
+                    (target[(size_t)r] == target[(size_t)i] && r < i)) {
+                    target[(size_t)i] = -1;
+                    moved--;
+                    st.moved--;
+                    again = true;
+                    break;
+                }
+            }
+        }
+    }
+    loop_span.stop();
+    if (!moved) return false;
+
+    std::vector<u64> words((size_t)nreal);
+    for (int k = 0; k < nreal; k++)
+        std::memcpy(&words[(size_t)k], bc.data() + slot_off(k), 8);
+    std::vector<std::vector<int>> before((size_t)nreal + 1);
+    for (int i = 0; i < nreal; i++)
+        if (target[(size_t)i] >= 0) before[(size_t)target[(size_t)i]].push_back(i);
+    std::vector<u64> out;
+    std::vector<int> oldof, leadpos((size_t)nreal + 1, -1);
+    for (int k = 0; k < nreal; k++) {
+        for (int i : before[(size_t)k]) {
+            if (leadpos[(size_t)k] < 0) leadpos[(size_t)k] = (int)out.size();
+            out.push_back(words[(size_t)i]);
+            oldof.push_back(i);
+        }
+        if (leadpos[(size_t)k] < 0) leadpos[(size_t)k] = (int)out.size();
+        if (target[(size_t)k] >= 0) continue;
+        out.push_back(words[(size_t)k]);
+        oldof.push_back(k);
+    }
+    leadpos[(size_t)nreal] = (int)out.size();
+    if ((int)out.size() != nreal) fail("sink: permutation changed the length");
+    for (int kk = 0; kk < nreal; kk++) {
+        int i2 = oldof[(size_t)kk];
+        if (i2 < 0 || i2 >= p.n || !p.q[i2]) continue;
+        if (!T.branchy_imm[(size_t)p.op[i2]]) continue;
+        int t = p.target(i2);
+        if (t < 0 || t > nreal) fail("sink: unresolved branch at slot %d", i2);
+        int nt = leadpos[(size_t)t];
+        int disp = slot_rel(nt) - (slot_rel(kk) + 8);
+        if (!branch_disp_ok(disp)) fail("sink: branch displacement out of range");
+        out[(size_t)kk] = setbits(out[(size_t)kk], 20, 24, (u64)(u32)disp & 0xFFFFFF);
+    }
+    for (int kk = 0; kk < nreal; kk++)
+        std::memcpy(bc.data() + slot_off(kk), &out[(size_t)kk], 8);
+    return true;
+}
+
+int g_remat_max = 8;
+int g_sink_remat = 1;
+
+static bool remat_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
+                        SinkStats &st) {
+    const OpSets &T = S();
+    u32 co = const_off(ct);
+    if (co > bc.size()) fail("remat: ConstBufOffset past the file");
+    int n = 3 * ((int)co - INSTR_START) / 32;
+    if (n <= 0) return false;
+    Program p;
+    p.load_bytes(bc, ct);
+    if (dce2_reads_cc(p)) return false;
+    int nreal = 0;
+    for (int k = 0; k < n && k < p.n; k++) if (p.q[k]) nreal = k + 1;
+    if (nreal <= 0) return false;
+    CFGraph c;
+    c.build(p, false);
+    std::vector<char> reach = c.reachable_from_entry();
+    std::vector<int> exit_live;
+    if (fragment) exit_live_regs(bc, exit_live);
+    std::vector<char> is_exit((size_t)RZ, 0);
+    for (int r : exit_live) if (r >= 0 && r < RZ) is_exit[(size_t)r] = 1;
+    Live L;
+    liveness(p, c, reach, exit_live, L);
+
+    SplitMap SM;
+    Adj unused_adj;
+
+    static std::vector<std::vector<int>> innode;
+    if (!build_split(p, c, reach, L, exit_live, SM, unused_adj, false, &innode, true))
+        return false;
+
+    std::vector<char> grouped((size_t)RZ, 0);
+    auto node_in = [&](int r, int i) -> int {
+        if (r < 0 || r >= RZ) return -1;
+        if (innode[(size_t)r].empty()) return L.live[(size_t)i].test(r) ? r : -1;
+        return innode[(size_t)r][(size_t)i];
+    };
+
+    std::vector<char> leader((size_t)nreal + 1, 0);
+    leader[0] = 1;
+    for (int i = 0; i < nreal; i++) {
+        if (!p.q[i] || !reach[(size_t)i]) continue;
+        bool falls = false;
+        for (int t : c.succ[(size_t)i]) {
+            if (t == i + 1) falls = true;
+            else if (t >= 0 && t < nreal) leader[(size_t)t] = 1;
+        }
+        if ((!falls || c.succ[(size_t)i].size() > 1) && i + 1 < nreal)
+            leader[(size_t)i + 1] = 1;
+    }
+    std::vector<int> block((size_t)nreal, 0);
+    for (int i = 0, b = 0; i < nreal; i++) { if (leader[(size_t)i]) b = i; block[(size_t)i] = b; }
+
+    int maxlive = 0;
+    std::vector<int> lpc((size_t)nreal, -1);
+    for (int i = 0; i < nreal; i++)
+        if (p.q[i] && reach[(size_t)i]) {
+            lpc[(size_t)i] = L.live[(size_t)i].popcount();
+            maxlive = std::max(maxlive, lpc[(size_t)i]);
+        }
+    std::vector<int> peakpts;
+    for (int i = 0; i < nreal; i++)
+        if (lpc[(size_t)i] >= maxlive - 1 && lpc[(size_t)i] >= 0)
+            peakpts.push_back(i);
+
+    std::vector<std::vector<Field>> fms((size_t)nreal);
+    std::vector<char> used((size_t)RZ, 0);
+    std::unordered_map<int, std::vector<int>> ndefs, nuses;
+    for (int i = 0; i < nreal; i++) {
+        if (!p.q[i] || !reach[(size_t)i]) continue;
+        fieldmap(p.q[i], p.op[i], p.props[i], fms[(size_t)i]);
+        for (const Field &f : fms[(size_t)i]) {
+            for (int k = 0; k < f.w; k++)
+                if (f.base + k >= 0 && f.base + k < RZ) {
+                    used[(size_t)(f.base + k)] = 1;
+                    if (f.w > 1) grouped[(size_t)(f.base + k)] = 1;
+                }
+            int nd = SM.at(i, f.off);
+            if (nd < 0) continue;
+            if (f.kind == 'd') ndefs[nd].push_back(i); else nuses[nd].push_back(i);
+        }
+    }
+    int fresh_next = 0;
+    auto fresh = [&]() {
+        while (fresh_next < RZ && (used[(size_t)fresh_next] || is_exit[(size_t)fresh_next]))
+            fresh_next++;
+        if (fresh_next >= RZ) return -1;
+        return fresh_next++;
+    };
+
+    struct Src { int off, name, node; };
+    auto shape = [&](int i, int &d, int &doff, std::vector<Src> &srcs) {
+        if (!p.q[i] || !reach[(size_t)i] || !sink_movable(p, i)) return false;
+        std::vector<int> dl, ml;
+        p.defs[i].list(dl);
+        p.maydefs[i].list(ml);
+        if (dl.size() != 1 || !ml.empty()) return false;
+        d = dl[0];
+        if (d < 0 || d >= RZ || is_exit[(size_t)d] || grouped[(size_t)d]) return false;
+        doff = -1;
+        srcs.clear();
+        for (const Field &f : fms[(size_t)i]) {
+            if (f.w != 1) return false;
+            if (f.kind == 'd') { if (f.base != d) return false; doff = f.off; }
+            else {
+                int nd = SM.at(i, f.off);
+                if (nd < 0) return false;
+                srcs.push_back({f.off, f.base, nd});
+            }
+        }
+        if (doff < 0) return false;
+        for (const Src &s : srcs) if (s.name == d) return false;
+        return true;
+    };
+
+    std::vector<u64> words((size_t)nreal);
+    for (int k = 0; k < nreal; k++)
+        std::memcpy(&words[(size_t)k], bc.data() + slot_off(k), 8);
+    std::multimap<int, u64> ins;
+    std::vector<char> gone((size_t)nreal, 0);
+    std::unordered_map<int, int> chain_name;
+    std::set<int> gone_nodes;
+
+    std::set<int> copy_reads;
+    int made = 0;
+    for (int i = 0; i < nreal; i++) {
+        int d, doff;
+        std::vector<Src> srcs;
+        if (gone[(size_t)i] || !shape(i, d, doff, srcs)) continue;
+        int dn = SM.at(i, doff);
+        if (dn < 0) continue;
+        auto dit = ndefs.find(dn);
+
+        std::string why;
+        auto rej = [&](const char *) {
+        };
+        if (dit == ndefs.end()) continue;
+        if (copy_reads.count(dn)) { rej("read by a copy"); continue; }
+
+        {
+            bool same = true;
+            u64 w0 = p.q[i] & ~((u64)0xFF << doff);
+            for (int k : dit->second) {
+                if (k == i) continue;
+                int dk, doffk;
+                std::vector<Src> srcsk;
+                if (gone[(size_t)k] || !shape(k, dk, doffk, srcsk) || dk != d ||
+                    doffk != doff || (p.q[k] & ~((u64)0xFF << doffk)) != w0 ||
+                    srcsk.size() != srcs.size()) { same = false; break; }
+                for (size_t z = 0; z < srcs.size(); z++)
+                    if (srcsk[z].off != srcs[z].off || srcsk[z].node != srcs[z].node) same = false;
+                if (!same) break;
+            }
+            if (!same) { rej("merged"); continue; }
+        }
+        auto uit = nuses.find(dn);
+        if (uit == nuses.end() || uit->second.empty()) continue;
+        const std::vector<int> &refs = uit->second;
+        bool self = false;
+        for (int r : refs) if (r == i) self = true;
+        if (self) { rej("self"); continue; }
+        std::map<int, int> firstref;
+        for (int r : refs) {
+            auto it = firstref.find(block[(size_t)r]);
+            if (it == firstref.end() || r < it->second) firstref[block[(size_t)r]] = r;
+        }
+        if ((int)firstref.size() > g_remat_max) { rej("blocks"); continue; }
+
+        bool gain = false;
+        for (int x : peakpts) {
+            if (x <= i || node_in(d, x) != dn) continue;
+            auto fit = firstref.find(block[(size_t)x]);
+            if (fit == firstref.end()) { gain = true; break; }
+            int at = fit->second;
+            for (int k = 0; k < g_sink_back && at > fit->first; k++) at--;
+            if (at > x) { gain = true; break; }
+        }
+        if (!gain) { rej("nogain"); continue; }
+        st.cands++;
+
+        struct Plan { int at; std::vector<std::pair<int, u64>> pre; u64 word; };
+        std::vector<Plan> plans;
+        bool ok = true;
+        int F = -1;
+        std::vector<std::pair<int, int>> chain_alloc;
+        std::vector<int> named;
+        auto chain_reg = [&](int nd) {
+            auto it = chain_name.find(nd);
+            if (it != chain_name.end()) return it->second;
+            for (auto &pr : chain_alloc) if (pr.first == nd) return pr.second;
+            int f = fresh();
+            if (f >= 0) chain_alloc.push_back({nd, f});
+            return f;
+        };
+        for (auto &pr : firstref) {
+            int at = pr.second;
+            for (int k = 0; k < g_sink_back && at > pr.first; k++) at--;
+            Plan pl;
+            pl.at = at;
+            u64 w = p.q[i];
+            for (const Src &s : srcs) {
+                if (gone_nodes.count(s.node)) {
+                    why = " src R" + std::to_string(s.name) + " retired this round"; ok = false; break;
+                }
+                if (node_in(s.name, at) == s.node) {
+                    named.push_back(s.node);
+                    continue;
+                }
+
+                auto sd = ndefs.find(s.node);
+                if (sd == ndefs.end() || sd->second.size() != 1) {
+                    why = " src R" + std::to_string(s.name) + " merged"; ok = false; break;
+                }
+                int k = sd->second[0];
+                int d2, doff2;
+                std::vector<Src> srcs2;
+                if (k == i || gone[(size_t)k] || !shape(k, d2, doff2, srcs2)) {
+                    why = " src R" + std::to_string(s.name) + " def " + std::to_string(k) +
+                          " " + p.name(k) + " not recomputable"; ok = false; break;
+                }
+                u64 w2 = p.q[k];
+                for (const Src &s2 : srcs2) {
+                    if (gone_nodes.count(s2.node) || node_in(s2.name, at) != s2.node) {
+                        why = " src R" + std::to_string(s.name) + " def " + std::to_string(k) +
+                              " " + p.name(k) + " needs R" + std::to_string(s2.name);
+                        ok = false; break;
+                    }
+                    named.push_back(s2.node);
+                }
+                if (!ok) break;
+                int f2 = chain_reg(s.node);
+                if (f2 < 0) { ok = false; break; }
+                w2 = set_field8(w2, doff2, f2);
+                pl.pre.push_back({k, w2});
+                w = set_field8(w, s.off, f2);
+            }
+            if (!ok) break;
+            pl.word = w;
+            plans.push_back(pl);
+        }
+        if (!ok) { rej("src"); continue; }
+        F = fresh();
+        if (F < 0) break;
+        for (auto &pr : chain_alloc) chain_name[pr.first] = pr.second;
+        copy_reads.insert(named.begin(), named.end());
+        for (Plan &pl : plans) {
+            for (auto &pw : pl.pre) ins.emplace(pl.at, pw.second);
+            ins.emplace(pl.at, set_field8(pl.word, doff, F));
+            made += 1 + (int)pl.pre.size();
+        }
+        for (int r : refs) {
+            u64 q = words[(size_t)r];
+            for (const Field &f : fms[(size_t)r])
+                if (f.kind == 'u' && f.base == d && f.w == 1 && SM.at(r, f.off) == dn)
+                    q = set_field8(q, f.off, F);
+            words[(size_t)r] = q;
+        }
+        for (int k : dit->second) gone[(size_t)k] = 1;
+        gone_nodes.insert(dn);
+        st.moved++;
+    }
+    if (!made) return false;
+    st.slots += made;
+
+    std::vector<u64> out;
+    std::vector<int> oldof, leadpos((size_t)nreal + 1, -1);
+    for (int kk = 0; kk < nreal; kk++) {
+        auto range = ins.equal_range(kk);
+        for (auto it = range.first; it != range.second; ++it) {
+            if (leadpos[(size_t)kk] < 0) leadpos[(size_t)kk] = (int)out.size();
+            out.push_back(it->second);
+            oldof.push_back(-1);
+        }
+        if (leadpos[(size_t)kk] < 0) leadpos[(size_t)kk] = (int)out.size();
+        if (gone[(size_t)kk]) continue;
+        out.push_back(words[(size_t)kk]);
+        oldof.push_back(kk);
+    }
+    leadpos[(size_t)nreal] = (int)out.size();
+    static const u64 W_NOP = 0x50b0000000070f00ull;
+    while (out.size() % 3) { out.push_back(W_NOP); oldof.push_back(-1); }
+    for (size_t kk = 0; kk < oldof.size(); kk++) {
+        int i2 = oldof[kk];
+        if (i2 < 0 || i2 >= p.n || !p.q[i2]) continue;
+        if (!T.branchy_imm[(size_t)p.op[i2]]) continue;
+        int t = p.target(i2);
+        if (t < 0 || t > nreal) fail("remat: unresolved branch at slot %d", i2);
+        int nt = leadpos[(size_t)t];
+        int disp = slot_rel(nt) - (slot_rel((int)kk) + 8);
+        if (!branch_disp_ok(disp)) fail("remat: branch displacement out of range");
+        out[kk] = setbits(out[kk], 20, 24, (u64)(u32)disp & 0xFFFFFF);
+    }
+    size_t blobsz = bc.size() - (size_t)co;
+    size_t nb = out.size() / 3;
+    u32 co2 = (u32)(INSTR_START + nb * 32);
+    co2 = (co2 + CBUF_ALIGN - 1) / CBUF_ALIGN * CBUF_ALIGN;
+    std::vector<u8> obc((size_t)co2 + blobsz, 0);
+    std::memcpy(obc.data(), bc.data(), INSTR_START);
+    for (size_t kk = 0; kk < out.size(); kk++)
+        std::memcpy(obc.data() + slot_off(kk), &out[kk], 8);
+    if (blobsz) std::memcpy(obc.data() + co2, bc.data() + co, blobsz);
+    NVNshaderControl *oc = ctl(ct);
+    oc->mProgramSize = (u32)(SPH_SIZE + nb * 32);
+    oc->mConstBufOffset = co2;
+    oc->mShaderSize = (u32)obc.size();
+    int ns2 = 3 * ((int)co2 - INSTR_START) / 32;
+    if (!slots_ok(ns2))
+        fail("remat: padded instruction count %d is not 12 mod 24", ns2);
+    bc.swap(obc);
+    return true;
+}
+
+int g_spill_max = 4;
+
+int g_spill_warps = 20;
+
+static const u64 SPILL_STL = 0xEF5400000007FF00ull;
+static const u64 SPILL_LDL = 0xEF4400000007FF00ull;
+
+static bool spill_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
+                        SinkStats &st) {
+    const OpSets &T = S();
+    if (g_spill_max <= 0) return false;
+    u32 co = const_off(ct);
+    if (co > bc.size()) fail("spill: ConstBufOffset past the file");
+    int n = 3 * ((int)co - INSTR_START) / 32;
+    if (n <= 0) return false;
+    Program p;
+    p.load_bytes(bc, ct);
+    if (dce2_reads_cc(p)) return false;
+    int nreal = 0;
+    for (int k = 0; k < n && k < p.n; k++) if (p.q[k]) nreal = k + 1;
+    if (nreal <= 0) return false;
+    CFGraph c;
+    c.build(p, false);
+    std::vector<char> reach = c.reachable_from_entry();
+    std::vector<int> exit_live;
+    if (fragment) exit_live_regs(bc, exit_live);
+    std::vector<char> is_exit((size_t)RZ, 0);
+    for (int r : exit_live) if (r >= 0 && r < RZ) is_exit[(size_t)r] = 1;
+    Live L;
+    liveness(p, c, reach, exit_live, L);
+
+    int next_off = 0;
+    for (int i = 0; i < nreal; i++) {
+        if (!p.q[i] || !reach[(size_t)i] || !T.local_ops[(size_t)p.op[i]]) continue;
+        u64 q = p.q[i];
+        if (((q >> 8) & 0xFF) != RZ) return false;
+        int32_t off = lmem_off(q);
+        int w = mem_data_regs(q, p.op[i]);
+        if (off < 0) return false;
+        if (off + 4 * w > next_off) next_off = off + 4 * w;
+    }
+    int nslots = g_spill_max - next_off / 4;
+    if (nslots <= 0) return false;
+
+    SplitMap SM;
+    Adj unused_adj;
+
+    static std::vector<std::vector<int>> innode;
+    if (!build_split(p, c, reach, L, exit_live, SM, unused_adj, false, &innode, true))
+        return false;
+    auto node_in = [&](int r, int i) -> int {
+        if (r < 0 || r >= RZ) return -1;
+        if (innode[(size_t)r].empty()) return L.live[(size_t)i].test(r) ? r : -1;
+        return innode[(size_t)r][(size_t)i];
+    };
+
+    std::vector<char> leader((size_t)nreal + 1, 0);
+    leader[0] = 1;
+    for (int i = 0; i < nreal; i++) {
+        if (!p.q[i] || !reach[(size_t)i]) continue;
+        bool falls = false;
+        for (int t : c.succ[(size_t)i]) {
+            if (t == i + 1) falls = true;
+            else if (t >= 0 && t < nreal) leader[(size_t)t] = 1;
+        }
+        if ((!falls || c.succ[(size_t)i].size() > 1) && i + 1 < nreal)
+            leader[(size_t)i + 1] = 1;
+    }
+    std::vector<int> block((size_t)nreal, 0);
+    for (int i = 0, b = 0; i < nreal; i++) { if (leader[(size_t)i]) b = i; block[(size_t)i] = b; }
+
+    int maxlive = 0;
+    for (int i = 0; i < nreal; i++)
+        if (p.q[i] && reach[(size_t)i])
+            maxlive = std::max(maxlive, L.live[(size_t)i].popcount());
+    if (occupancy_of(maxlive) > g_spill_warps) return false;
+    std::vector<int> peakpts;
+    for (int i = 0; i < nreal; i++)
+        if (p.q[i] && reach[(size_t)i] && L.live[(size_t)i].popcount() >= maxlive - 1)
+            peakpts.push_back(i);
+    if (peakpts.empty()) return false;
+
+    std::vector<std::vector<Field>> fms((size_t)nreal);
+    std::vector<char> used((size_t)RZ, 0), grouped((size_t)RZ, 0);
+    std::unordered_map<int, std::vector<int>> ndefs, nuses;
+    std::unordered_map<int, int> nname;
+    for (int i = 0; i < nreal; i++) {
+        if (!p.q[i] || !reach[(size_t)i]) continue;
+        fieldmap(p.q[i], p.op[i], p.props[i], fms[(size_t)i]);
+        for (const Field &f : fms[(size_t)i]) {
+            for (int k = 0; k < f.w; k++)
+                if (f.base + k >= 0 && f.base + k < RZ) {
+                    used[(size_t)(f.base + k)] = 1;
+                    if (f.w > 1) grouped[(size_t)(f.base + k)] = 1;
+                }
+            int nd = SM.at(i, f.off);
+            if (nd < 0) continue;
+            nname[nd] = f.base;
+            if (f.kind == 'd') ndefs[nd].push_back(i); else nuses[nd].push_back(i);
+        }
+    }
+    int fresh_next = 0;
+    auto fresh = [&]() {
+        while (fresh_next < RZ && (used[(size_t)fresh_next] || is_exit[(size_t)fresh_next]))
+            fresh_next++;
+        if (fresh_next >= RZ) return -1;
+        return fresh_next++;
+    };
+
+    struct Cand { int node, name, score, nblocks; };
+    std::vector<Cand> cands;
+    std::set<int> seen_nodes;
+    for (int x : peakpts) {
+        std::vector<int> regs;
+        L.live[(size_t)x].bits(regs);
+        for (int r : regs) {
+            if (r >= RZ || is_exit[(size_t)r] || grouped[(size_t)r]) continue;
+            int dn = node_in(r, x);
+            if (dn < 0 || seen_nodes.count(dn)) continue;
+            seen_nodes.insert(dn);
+            auto dit = ndefs.find(dn);
+            auto uit = nuses.find(dn);
+            if (dit == ndefs.end() || uit == nuses.end() || uit->second.empty()) continue;
+            bool ok = true;
+            for (int k : dit->second) {
+                u64 q = p.q[k];
+                if (((q >> 16) & 0xF) != 7 || T.branchy[(size_t)p.op[k]] ||
+                    T.pushy[(size_t)p.op[k]] || T.local_ops[(size_t)p.op[k]]) { ok = false; break; }
+                std::vector<int> ml;
+                p.maydefs[k].list(ml);
+                if (!ml.empty()) { ok = false; break; }
+                bool plain = false;
+                for (const Field &f : fms[(size_t)k])
+                    if (f.kind == 'd' && f.base == r && f.w == 1 && SM.at(k, f.off) == dn) plain = true;
+                if (!plain) { ok = false; break; }
+            }
+            if (!ok) continue;
+            std::map<int, int> firstref;
+            for (int u : uit->second) {
+                bool plain = false;
+                for (const Field &f : fms[(size_t)u])
+                    if (f.kind == 'u' && f.base == r && f.w == 1 && SM.at(u, f.off) == dn) plain = true;
+                if (!plain) { ok = false; break; }
+                auto it = firstref.find(block[(size_t)u]);
+                if (it == firstref.end() || u < it->second) firstref[block[(size_t)u]] = u;
+            }
+            if (!ok) continue;
+
+            for (int k : dit->second) if (p.uses[k].has(r) && node_in(r, k) == dn) ok = false;
+            if (!ok) continue;
+            int score = 0;
+            for (int y : peakpts) {
+                if (node_in(r, y) != dn) continue;
+                auto fit = firstref.find(block[(size_t)y]);
+                if (fit == firstref.end()) { score++; continue; }
+                int at = fit->second;
+                for (int k = 0; k < g_sink_back && at > fit->first; k++) at--;
+                if (at > y) score++;
+            }
+            if (score && (int)firstref.size() <= g_remat_max)
+                cands.push_back({dn, r, score, (int)firstref.size()});
+        }
+    }
+    if (cands.empty()) return false;
+
+    std::stable_sort(cands.begin(), cands.end(), [](const Cand &a, const Cand &b) {
+        if (a.score != b.score) return a.score > b.score;
+        return a.nblocks < b.nblocks;
+    });
+
+    std::vector<u64> words((size_t)nreal);
+    for (int k = 0; k < nreal; k++)
+        std::memcpy(&words[(size_t)k], bc.data() + slot_off(k), 8);
+    std::multimap<int, u64> ins;
+    int made = 0, taken = 0;
+    for (const Cand &cd : cands) {
+        if (taken >= nslots) break;
+        int F = fresh();
+        if (F < 0) break;
+        int off = next_off + 4 * taken;
+        const std::vector<int> &defs = ndefs[cd.node];
+        const std::vector<int> &uses = nuses[cd.node];
+        for (int k : defs) {
+            ins.emplace(k + 1, SPILL_STL | (u64)cd.name | ((u64)off << 20));
+            made++;
+        }
+        std::map<int, int> firstref;
+        for (int u : uses) {
+            auto it = firstref.find(block[(size_t)u]);
+            if (it == firstref.end() || u < it->second) firstref[block[(size_t)u]] = u;
+        }
+        for (auto &pr : firstref) {
+            int at = pr.second;
+            for (int k = 0; k < g_sink_back && at > pr.first; k++) at--;
+            ins.emplace(at, SPILL_LDL | (u64)F | ((u64)off << 20));
+            made++;
+        }
+        for (int u : uses) {
+            u64 q = words[(size_t)u];
+            for (const Field &f : fms[(size_t)u])
+                if (f.kind == 'u' && f.base == cd.name && f.w == 1 && SM.at(u, f.off) == cd.node)
+                    q = set_field8(q, f.off, F);
+            words[(size_t)u] = q;
+        }
+        taken++;
+        st.moved++;
+    }
+    if (!made) return false;
+    st.slots += made;
+
+    std::vector<u64> out;
+    std::vector<int> oldof, leadpos((size_t)nreal + 1, -1);
+    for (int kk = 0; kk <= nreal; kk++) {
+        auto range = ins.equal_range(kk);
+        for (auto it = range.first; it != range.second; ++it) {
+            if (leadpos[(size_t)kk] < 0) leadpos[(size_t)kk] = (int)out.size();
+            out.push_back(it->second);
+            oldof.push_back(-1);
+        }
+        if (leadpos[(size_t)kk] < 0) leadpos[(size_t)kk] = (int)out.size();
+        if (kk == nreal) break;
+        out.push_back(words[(size_t)kk]);
+        oldof.push_back(kk);
+    }
+    static const u64 W_NOP = 0x50b0000000070f00ull;
+    while (out.size() % 3) { out.push_back(W_NOP); oldof.push_back(-1); }
+    for (size_t kk = 0; kk < oldof.size(); kk++) {
+        int i2 = oldof[kk];
+        if (i2 < 0 || i2 >= p.n || !p.q[i2]) continue;
+        if (!T.branchy_imm[(size_t)p.op[i2]]) continue;
+        int t = p.target(i2);
+        if (t < 0 || t > nreal) fail("spill: unresolved branch at slot %d", i2);
+        int nt = leadpos[(size_t)t];
+        int disp = slot_rel(nt) - (slot_rel((int)kk) + 8);
+        if (!branch_disp_ok(disp)) fail("spill: branch displacement out of range");
+        out[kk] = setbits(out[kk], 20, 24, (u64)(u32)disp & 0xFFFFFF);
+    }
+    size_t blobsz = bc.size() - (size_t)co;
+    size_t nb = out.size() / 3;
+    u32 co2 = (u32)(INSTR_START + nb * 32);
+    co2 = (co2 + CBUF_ALIGN - 1) / CBUF_ALIGN * CBUF_ALIGN;
+    std::vector<u8> obc((size_t)co2 + blobsz, 0);
+    std::memcpy(obc.data(), bc.data(), INSTR_START);
+    for (size_t kk = 0; kk < out.size(); kk++)
+        std::memcpy(obc.data() + slot_off(kk), &out[kk], 8);
+    if (blobsz) std::memcpy(obc.data() + co2, bc.data() + co, blobsz);
+    NVNshaderControl *oc = ctl(ct);
+    oc->mProgramSize = (u32)(SPH_SIZE + nb * 32);
+    oc->mConstBufOffset = co2;
+    oc->mShaderSize = (u32)obc.size();
+    int ns2 = 3 * ((int)co2 - INSTR_START) / 32;
+    if (!slots_ok(ns2))
+        fail("spill: padded instruction count %d is not 12 mod 24", ns2);
+    bc.swap(obc);
+    return true;
+}
+
+long long g_sink_unclean = 0;
+static bool entry_live_grew(const std::vector<u8> &bc, const std::vector<u8> &ct,
+                           const std::vector<int> &before) {
+    std::vector<int> now;
+    entry_live(bc, ct, now);
+    for (int r : now)
+        if (std::find(before.begin(), before.end(), r) == before.end())
+            return true;
+    return false;
+}
+
+void sink_cheap(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
+                SinkStats &st) {
+    bool changed = false;
+    std::vector<int> ent0;
+    entry_live(bc, ct, ent0);
+    std::vector<u8> kb, kc;
+    for (int r = 0; r < g_sink_rounds; r++) {
+        if (!sink_round(bc, ct, fragment, st)) break;
+        changed = true;
+    }
+    if (g_sink_remat) {
+        for (int r = 0; r < g_sink_rounds; r++) {
+            bool rr_;
+            kb = bc; kc = ct;
+            { PerfScope ps_(&g_perf.x[32]); g_perf.xn[32]++;
+              rr_ = remat_round(bc, ct, fragment, st); if (rr_) g_remat_ok++; }
+            if (rr_ && entry_live_grew(bc, ct, ent0)) {
+                bc.swap(kb); ct.swap(kc); rr_ = false; g_sink_unclean++;
+            }
+            if (!rr_) break;
+            changed = true;
+            for (int r2 = 0; r2 < g_sink_rounds; r2++)
+                if (!sink_round(bc, ct, fragment, st)) break;
+        }
+    }
+    bool sp_;
+    kb = bc; kc = ct;
+    { PerfScope ps_(&g_perf.x[33]); g_perf.xn[33]++;
+      sp_ = g_sink_remat && spill_round(bc, ct, fragment, st); if (sp_) g_spill_ok++; }
+    if (sp_ && entry_live_grew(bc, ct, ent0)) {
+        bc.swap(kb); ct.swap(kc); sp_ = false; g_sink_unclean++;
+    }
+    if (sp_) {
+        changed = true;
+        for (int r2 = 0; r2 < g_sink_rounds; r2++)
+            if (!sink_round(bc, ct, fragment, st)) break;
+    }
+
+    if (changed) { PerfScope ps_(&g_perf.x[34]); g_perf.xn[34]++;
+                   phase_b(bc, const_off(ct)); }
+}
+
+void entry_live(const std::vector<u8> &bc, const std::vector<u8> &ct,
+                std::vector<int> &out) {
+    Program p;
+    p.load_bytes(bc, ct);
+    CFGraph c;
+    c.build(p, false);
+    std::vector<char> reach = c.reachable_from_entry();
+    Mask ent;
+    live_entry(p, c, reach, ent);
+    ent.bits(out);
+}
+
+bool g_vn = false;
+bool g_vn_tex = false;
+long long g_vn_calls = 0, g_vn_rounds = 0, g_vn_merged = 0, g_vn_deleted = 0;
+long long g_vn_rev = 0, g_vn_groups = 0;
+long long g_vn_rows = 0, g_vn_kept = 0, g_vn_ladder = 0;
+
+static bool vn_cse_op(const Program &p, int i) {
+    const OpSets &T = S();
+    int nm = p.op[i];
+    if (nm < 0) return false;
+    if (T.side_effect[(size_t)nm] || T.branchy[(size_t)nm] ||
+        T.pushy[(size_t)nm] || T.freebie[(size_t)nm]) return false;
+    if (T.tex_bases[(size_t)nm]) {
+        if (!g_vn_tex) return false;
+    } else {
+        if (!T.pure_cse[(size_t)nm] && nm != T.O_Mov && nm != T.O_Mov32i)
+            return false;
+        if (T.load_or_store[(size_t)nm] && nm != T.O_Ldc) return false;
+    }
+    u64 q = p.q[i];
+    if (((q >> 16) & 0xF) != 7) return false;
+    if (p.maydefs[i].any()) return false;
+    std::vector<int> v;
+    p.defs[i].list(v);
+    if (v.empty()) return false;
+    for (int r : v) if (r >= RZ) return false;
+    int spur = spurious_pred(nm, q);
+    p.uses[i].list(v);
+    for (int r : v) if (r >= PREG && r != spur) return false;
+    return true;
+}
+
+static int vn_dead_sweep(const Program &p, const CFGraph &c,
+                         const std::vector<char> &reach,
+                         const std::vector<int> &exit_live,
+                         std::vector<char> &killed) {
+    std::vector<Mask> lout;
+    std::vector<int> v;
+    int dead = 0;
+    for (int r = 0; r < 16; r++) {
+        dce2_liveout(p, c, reach, killed, exit_live, lout);
+        bool ch = false;
+        for (int i = 0; i < p.n; i++) {
+            if (!reach[(size_t)i] || killed[(size_t)i] || !p.q[i]) continue;
+            if (!vn_cse_op(p, i)) continue;
+            p.defs[i].list(v);
+            bool live = false;
+            for (int rg : v) if (rg < RZ && lout[(size_t)i].test(rg)) live = true;
+            if (live) continue;
+            killed[(size_t)i] = 1; dead++; ch = true;
+        }
+        if (!ch) break;
+    }
+    return dead;
+}
+
+static bool vn_copy(const Program &p, int i) {
+    if (p.op[i] != S().O_Mov) return false;
+    u64 q = p.q[i];
+    if (srcb_form(q) != FORM_REG) return false;
+    if (((q >> 39) & 0xF) != 0xF) return false;
+    if (((q >> 16) & 0xF) != 7) return false;
+    return (int)((q >> 20) & 0xFF) != RZ && (int)(q & 0xFF) != RZ;
+}
+
+struct VnGroup {
+    int w = 0, fresh = -1;
+    bool ok = true;
+    int name[8] = {0};
+    int node[8] = {0};
+};
+
+static int vn_live_gprs(const Mask &m) {
+    int c = 0;
+    for (int w = 0; w < (RZ + 63) / 64; w++) {
+        u64 x = m.w[w];
+        if (w == (RZ >> 6)) x &= ((u64)1 << (RZ & 63)) - 1;
+        while (x) { x &= x - 1; c++; }
+    }
+    return c;
+}
+
+static bool vn_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
+                     VnStats &st, int span, bool &rejected) {
+    u32 co = const_off(ct);
+    if (co > bc.size()) fail("vn: ConstBufOffset past the file");
+    int n = 3 * ((int)co - INSTR_START) / 32;
+    if (n <= 0) return false;
+    Program p;
+    p.load_bytes(bc, ct);
+    if (dce2_reads_cc(p)) return false;
+    int nreal = 0;
+    for (int k = 0; k < n && k < p.n; k++) if (p.q[k]) nreal = k + 1;
+    if (nreal <= 0) return false;
+    CFGraph c;
+    c.build(p, false);
+    std::vector<char> reach = c.reachable_from_entry();
+
+    if (c.overflow) return false;
+    for (int i = 0; i < nreal; i++)
+        if (reach[(size_t)i] && c.unknown[(size_t)i]) return false;
+    std::vector<char> in_cycle;
+    cycle_nodes(c, reach, nreal, in_cycle);
+    std::vector<int> exit_live;
+    if (fragment) exit_live_regs(bc, exit_live);
+    std::vector<char> is_exit((size_t)RZ, 0);
+    for (int r : exit_live) if (r >= 0 && r < RZ) is_exit[(size_t)r] = 1;
+    Live L;
+    liveness(p, c, reach, exit_live, L);
+
+    SplitMap SM;
+    Adj unused_adj;
+    static std::vector<std::vector<int>> innode, outnode;
+    if (!build_split(p, c, reach, L, exit_live, SM, unused_adj, false,
+                     &innode, true, &outnode))
+        return false;
+    auto nin = [&](int r, int i) -> int {
+        if (r < 0 || r >= RZ) return -1;
+        const std::vector<int> &v = innode[(size_t)r];
+        return v.empty() ? -1 : v[(size_t)i];
+    };
+    auto nout = [&](int r, int i) -> int {
+        if (r < 0 || r >= RZ) return -1;
+        const std::vector<int> &v = outnode[(size_t)r];
+        return v.empty() ? -1 : v[(size_t)i];
+    };
+
+    std::vector<std::vector<Field>> fms((size_t)nreal);
+    for (int i = 0; i < nreal; i++)
+        if (p.q[i] && reach[(size_t)i])
+            fieldmap(p.q[i], p.op[i], p.props[i], fms[(size_t)i]);
+
+    std::vector<char> used((size_t)RZ, 0);
+    {
+        std::vector<int> v;
+        for (int i = 0; i < p.n; i++) {
+            if (!p.q[i]) continue;
+            RSet all = p.defs[i];
+            all.unite(p.maydefs[i]);
+            all.unite(p.uses[i]);
+            all.list(v);
+            for (int r : v) if (r >= 0 && r < RZ) used[(size_t)r] = 1;
+            if (i >= nreal || !reach[(size_t)i]) continue;
+            for (const Field &f : fms[(size_t)i])
+                for (int k = 0; k < f.w; k++)
+                    if (f.base + k >= 0 && f.base + k < RZ)
+                        used[(size_t)(f.base + k)] = 1;
+        }
+    }
+
+    std::unordered_map<int, int> ndef;
+    for (int i = 0; i < nreal; i++) {
+        if (!p.q[i] || !reach[(size_t)i]) continue;
+        for (const Field &f : fms[(size_t)i]) {
+            if (f.kind != 'd') continue;
+            for (int k = 0; k < f.w; k++) {
+                int nd = nout(f.base + k, i);
+                if (nd >= 0) ndef[nd]++;
+            }
+        }
+    }
+
+    std::unordered_map<int, int> vnum;
+    int nextvn = 1;
+    for (const auto &e : ndef) if (e.second != 1) vnum[e.first] = nextvn++;
+    auto vnof = [&](int node) -> int {
+        if (node < 0) return nextvn++;
+        auto it = vnum.find(node);
+        if (it != vnum.end()) return it->second;
+        int v = nextvn++;
+        vnum[node] = v;
+        return v;
+    };
+
+    std::string key;
+    auto build_key = [&](int i) {
+        key.clear();
+        long long x;
+        auto push = [&](long long y) { x = y; key.append((const char *)&x, sizeof x); };
+        u64 mask = 0;
+        for (const Field &f : fms[(size_t)i]) mask |= (u64)0xFF << f.off;
+        push(p.op[i]);
+        push((long long)(p.q[i] & ~mask));
+        for (const Field &f : fms[(size_t)i]) {
+            push(((long long)f.off << 16) | ((long long)f.w << 8) | (long long)f.kind);
+            if (f.kind == 'd') continue;
+            for (int k = 0; k < f.w; k++) push(vnof(nin(f.base + k, i)));
+        }
+    };
+
+    int W = 0;
+    std::vector<u64> dom;
+    if (!dominators(c, reach, nreal, W, dom)) return false;
+    auto dominates = [&](int a, int b) {
+        return (dom[(size_t)b * W + (a >> 6)] >> (a & 63)) & 1;
+    };
+
+    std::vector<VnGroup> gr;
+    std::unordered_map<long long, int> gidof;
+    std::unordered_map<int, long long> gpos;
+    std::unordered_map<std::string, std::vector<int>> table;
+    int nmatch = 0;
+    for (int i = 0; i < nreal; i++) {
+        if (!p.q[i] || !reach[(size_t)i]) continue;
+        bool ok = !in_cycle[(size_t)i] && vn_cse_op(p, i);
+        if (ok)
+            for (const Field &f : fms[(size_t)i]) {
+                if (f.kind != 'd') continue;
+                for (int k = 0; k < f.w && ok; k++) {
+                    int nd = nout(f.base + k, i);
+                    if (nd >= 0 && ndef[nd] != 1) ok = false;
+                }
+                if (!ok) break;
+            }
+        int m = -1, seen = -1;
+        const bool iscopy = p.q[i] && reach[(size_t)i] && vn_copy(p, i);
+        if (ok) {
+            build_key(i);
+            std::vector<int> &cand = table[key];
+
+            for (size_t z = cand.size(); z-- > 0;) {
+                if (seen < 0) seen = cand[z];
+                if (i - cand[z] > span) continue;
+                if (dominates(cand[z], i)) { m = cand[z]; break; }
+            }
+            if (m < 0) cand.push_back(i);
+        }
+
+        for (size_t z = 0; z < fms[(size_t)i].size(); z++) {
+            const Field &f = fms[(size_t)i][z];
+            if (f.kind != 'd') continue;
+            if (iscopy) {
+                int nd = nout(f.base, i);
+                if (nd >= 0 && ndef[nd] == 1)
+                    vnum[nd] = vnof(nin((int)((p.q[i] >> 20) & 0xFF), i));
+            } else if (m < 0) {
+                for (int k = 0; k < f.w; k++) {
+                    int nd = nout(f.base + k, i);
+                    if (nd >= 0 && ndef[nd] == 1) vnum[nd] = nextvn++;
+                }
+            }
+            if (m < 0) continue;
+            const Field &g = fms[(size_t)m][z];
+            if (!iscopy)
+                for (int k = 0; k < f.w; k++) {
+                    int nd = nout(f.base + k, i);
+                    if (nd >= 0 && ndef[nd] == 1)
+                        vnum[nd] = vnof(nout(g.base + k, m));
+                }
+            if (f.w > 8) continue;
+            long long gk = (long long)m * 64 + (long long)z;
+            auto git = gidof.find(gk);
+            int gid;
+            if (git == gidof.end()) {
+                VnGroup G;
+                G.w = g.w;
+                for (int k = 0; k < g.w; k++) {
+                    G.name[k] = g.base + k;
+                    G.node[k] = nout(g.base + k, m);
+                    if (G.node[k] < 0 || is_exit[(size_t)(g.base + k)]) G.ok = false;
+                }
+                gid = (int)gr.size();
+                gr.push_back(G);
+                gidof.emplace(gk, gid);
+                if (G.ok)
+                    for (int k = 0; k < g.w; k++) gpos[G.node[k]] = (long long)gid * 8 + k;
+            } else {
+                gid = git->second;
+            }
+            if (!gr[(size_t)gid].ok) continue;
+            for (int k = 0; k < f.w; k++) {
+                int nd = nout(f.base + k, i);
+                if (nd < 0) { gr[(size_t)gid].ok = false; break; }
+                gpos[nd] = (long long)gid * 8 + k;
+            }
+        }
+        if (m >= 0) nmatch++;
+    }
+    if (gpos.empty()) return false;
+
+    std::vector<char> gfail((size_t)gr.size(), 0);
+    for (size_t pass = 0; pass <= gr.size() + 1; pass++) {
+        bool ch = false;
+        for (int u = 0; u < nreal; u++) {
+            if (!p.q[u] || !reach[(size_t)u]) continue;
+            for (const Field &f : fms[(size_t)u]) {
+                if (f.kind == 'd') continue;
+                int g0 = -1, k0 = -1, nfound = 0;
+                bool okf = true;
+                for (int j = 0; j < f.w; j++) {
+                    auto it = gpos.find(nin(f.base + j, u));
+                    if (it == gpos.end()) { okf = false; continue; }
+                    nfound++;
+                    int gid = (int)(it->second / 8), kk = (int)(it->second % 8);
+                    if (j == 0) { g0 = gid; k0 = kk; }
+                    else if (gid != g0 || kk != k0 + j) okf = false;
+                }
+                if (!nfound) continue;
+                if (g0 < 0 || k0 < 0 || k0 + f.w > gr[(size_t)g0].w ||
+                    gfail[(size_t)g0]) okf = false;
+                if (okf) continue;
+                for (int j = 0; j < f.w; j++) {
+                    auto it = gpos.find(nin(f.base + j, u));
+                    if (it == gpos.end()) continue;
+                    int gid = (int)(it->second / 8);
+                    if (!gfail[(size_t)gid]) { gfail[(size_t)gid] = 1; ch = true; }
+                }
+            }
+        }
+        if (!ch) break;
+        if (pass == gr.size() + 1) return false;
+    }
+
+    int nfresh = 0, ngroup = 0;
+    {
+        int next_free = 0;
+        for (size_t g = 0; g < gr.size(); g++) {
+            if (!gr[g].ok || gfail[g]) continue;
+            int w = gr[g].w, base = -1;
+            for (int r = next_free; r + w <= RZ; r++) {
+                bool free_run = true;
+                for (int k = 0; k < w; k++)
+                    if (used[(size_t)(r + k)] || is_exit[(size_t)(r + k)]) free_run = false;
+                if (free_run) { base = r; break; }
+            }
+            if (base < 0) { gfail[g] = 1; continue; }
+            gr[g].fresh = base;
+            for (int k = 0; k < w; k++) used[(size_t)(base + k)] = 1;
+            next_free = base + w;
+            nfresh += w;
+            ngroup++;
+        }
+    }
+    if (!ngroup) return false;
+
+    std::vector<u64> words((size_t)nreal);
+    for (int k = 0; k < nreal; k++)
+        std::memcpy(&words[(size_t)k], bc.data() + slot_off(k), 8);
+    int moved = 0;
+    for (int u = 0; u < nreal; u++) {
+        if (!p.q[u] || !reach[(size_t)u]) continue;
+        for (const Field &f : fms[(size_t)u]) {
+            int g0 = -1, k0 = -1;
+            if (f.kind == 'd') {
+                auto it = gpos.find(nout(f.base, u));
+                if (it == gpos.end()) continue;
+                g0 = (int)(it->second / 8); k0 = (int)(it->second % 8);
+                if (gfail[(size_t)g0] || gr[(size_t)g0].fresh < 0) continue;
+
+                if (gr[(size_t)g0].node[k0] != nout(f.base, u)) continue;
+                if (k0 != 0 || f.w != gr[(size_t)g0].w) continue;
+            } else {
+                for (int j = 0; j < f.w; j++) {
+                    auto it = gpos.find(nin(f.base + j, u));
+                    if (it == gpos.end()) { g0 = -1; break; }
+                    int gid = (int)(it->second / 8), kk = (int)(it->second % 8);
+                    if (gfail[(size_t)gid] || gr[(size_t)gid].fresh < 0) { g0 = -1; break; }
+                    if (j == 0) { g0 = gid; k0 = kk; }
+                    else if (gid != g0 || kk != k0 + j) { g0 = -1; break; }
+                }
+                if (g0 < 0 || k0 < 0 || k0 + f.w > gr[(size_t)g0].w) continue;
+            }
+            words[(size_t)u] = setbits(words[(size_t)u], f.off, 8,
+                                       (u64)(gr[(size_t)g0].fresh + k0));
+            moved++;
+        }
+    }
+    if (!moved) return false;
+
+    std::vector<u8> nbc = bc;
+    for (int k = 0; k < nreal; k++)
+        std::memcpy(nbc.data() + slot_off(k), &words[(size_t)k], 8);
+    Program p2;
+    p2.load_bytes(nbc, ct);
+    CFGraph c2;
+    c2.build(p2, false);
+    std::vector<char> reach2 = c2.reachable_from_entry();
+    std::vector<char> killed((size_t)p2.n, 0);
+    int dead = vn_dead_sweep(p2, c2, reach2, exit_live, killed);
+    if (!dead) return false;
+
+    size_t blobsz = bc.size() - (size_t)co;
+    std::vector<int> newidx((size_t)nreal + 1, -1), nextkept((size_t)nreal + 1, -1);
+    std::vector<u64> out;
+    std::vector<int> oldof;
+    for (int k = 0; k < nreal; k++) {
+        if (k < p2.n && killed[(size_t)k]) continue;
+        newidx[(size_t)k] = (int)out.size();
+        out.push_back(words[(size_t)k]);
+        oldof.push_back(k);
+    }
+    if (out.empty()) fail("vn: nothing left");
+    { int nk = (int)out.size();
+      for (int k = nreal; k >= 0; k--) {
+          if (k < nreal && newidx[(size_t)k] >= 0) nk = newidx[(size_t)k];
+          nextkept[(size_t)k] = nk;
+      } }
+    while (out.size() % 3) { out.push_back(DCE2_W_NOP); oldof.push_back(-1); }
+    for (size_t k = 0; k < oldof.size(); k++) {
+        int i2 = oldof[k];
+        if (i2 < 0 || i2 >= p2.n || !p2.q[i2]) continue;
+        if (!S().branchy_imm[(size_t)p2.op[i2]]) continue;
+        int t = p2.target(i2);
+        if (t < 0 || t > nreal) fail("vn: unresolved branch at slot %d", i2);
+        int nt = nextkept[(size_t)t];
+        int disp = slot_rel(nt) - (slot_rel((int)k) + 8);
+        if (!branch_disp_ok(disp)) fail("vn: branch displacement out of range");
+        out[k] = setbits(out[k], 20, 24, (u64)(u32)disp & 0xFFFFFF);
+    }
+    size_t nb = out.size() / 3;
+    u32 co2 = (u32)(INSTR_START + nb * 32);
+    co2 = (co2 + CBUF_ALIGN - 1) / CBUF_ALIGN * CBUF_ALIGN;
+    std::vector<u8> obc((size_t)co2 + blobsz, 0);
+    std::memcpy(obc.data(), bc.data(), INSTR_START);
+    for (size_t k = 0; k < out.size(); k++)
+        std::memcpy(obc.data() + slot_off(k), &out[k], 8);
+    if (blobsz) std::memcpy(obc.data() + co2, bc.data() + co, blobsz);
+    std::vector<u8> oct = ct;
+    NVNshaderControl *oc = ctl(oct);
+    oc->mProgramSize = (u32)(SPH_SIZE + nb * 32);
+    oc->mConstBufOffset = co2;
+    oc->mShaderSize = (u32)obc.size();
+    phase_b(obc, co2);
+    int ns = 3 * ((int)co2 - INSTR_START) / 32;
+    if (!slots_ok(ns)) fail("vn: padded instruction count %d is not 12 mod 24", ns);
+
+    int cyc0 = issue_cycles(bc, co), cyc1 = issue_cycles(obc, co2);
+    int ml0 = 0, ml1 = 0;
+    for (int i = 0; i < nreal; i++)
+        if (p.q[i] && reach[(size_t)i])
+            ml0 = std::max(ml0, vn_live_gprs(L.live[(size_t)i]));
+    {
+        Program p3;
+        p3.load_bytes(obc, oct);
+        CFGraph c3;
+        c3.build(p3, false);
+        std::vector<char> r3 = c3.reachable_from_entry();
+        Live L3;
+        liveness(p3, c3, r3, exit_live, L3);
+        for (int i = 0; i < p3.n; i++)
+            if (p3.q[i] && r3[(size_t)i])
+                ml1 = std::max(ml1, vn_live_gprs(L3.live[(size_t)i]));
+    }
+
+    {
+        Program p4;
+        p4.load_bytes(obc, oct);
+        CFGraph c4;
+        c4.build(p4, false);
+        std::vector<char> r4 = c4.reachable_from_entry();
+        Mask ent;
+        live_entry(p4, c4, r4, ent);
+        if (ent.any()) {
+            st.reverted++; g_vn_rev++; rejected = true; return false;
+        }
+    }
+    bool keep = cyc1 <= cyc0;
+    if (!keep) {
+        st.reverted++; g_vn_rev++; rejected = true; return false;
+    }
+
+    st.merged += nmatch;
+    st.moved += moved;
+    st.deleted += dead;
+    st.groups += ngroup;
+    g_vn_merged += nmatch;
+    g_vn_deleted += dead;
+    g_vn_groups += ngroup;
+    bc.swap(obc);
+    ct.swap(oct);
+    return true;
+}
+
+void vn_cse(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
+            VnStats &st, int reach) {
+    if (!g_vn) return;
+    g_vn_calls++;
+    for (int r = 0; r < 8; r++) {
+        bool rejected = false;
+        if (!vn_round(bc, ct, fragment, st, reach, rejected)) break;
+        st.rounds++;
+        g_vn_rounds++;
     }
 }
 

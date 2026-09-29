@@ -248,4 +248,7 @@ static_assert(sizeof(NvShaderHeader)==80, "Wrong size for NvShaderHeader");
 #define SPH_BITS_LOCAL_MEM_HI_SZ      87, 64
 #define SPH_BITS_LOCAL_MEM_CRS_SZ    119, 96
 
+#define SPH_IMAP_SYSVALS_OFF   0x14
+#define SPH_IMAP_GENERIC_OFF   0x18
+#define IMAP_GENERIC_BASE      0x80
 #define SPH_BITS_OMAP_TARGET(i)  (579 + 4 * (i)), (576 + 4 * (i))
