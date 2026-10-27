@@ -8,8 +8,6 @@ bool g_cse_mov32i = false;
 
 bool g_fmac = false;
 
-bool g_fmac_all = false;
-
 static inline int32_t s32(u32 v) { return (int32_t)v; }
 
 static inline float f32_of(u32 u) { float f; std::memcpy(&f, &u, 4); return f; }
@@ -171,10 +169,11 @@ u32 xmad_value(u32 sa, int hia, u32 sb, int hib, u32 sc, int psl, int mrg,
     return r & M32;
 }
 
-void Spec::init(const Program &prog, int opt_bank,
-                const std::vector<int> &exit_live, bool lm_dse_, bool cbfold_,
-                int folds_, bool texrw_) {
-    const OpSets &T = S();
+template <class I>
+void SpecT<I>::init(const ProgramT<I> &prog, int opt_bank,
+                    const std::vector<int> &exit_live, bool lm_dse_, bool cbfold_,
+                    int folds_, bool texrw_) {
+    const OpSets &T = I::sets();
     p = &prog;
     bank = opt_bank;
     fold_blob = true;
@@ -197,27 +196,26 @@ void Spec::init(const Program &prog, int opt_bank,
     pnum.assign((size_t)n, 0);
     pinv.assign((size_t)n, 0);
     nopred.assign((size_t)n, 0);
+    bpn.assign((size_t)n, -1);
+    binv.assign((size_t)n, 0);
+    call_ret.assign((size_t)n, -1);
     for (int i = 0; i < n; i++) {
         int nm = prog.op[i];
-        int c = C_OTHER;
-        if (nm == T.O_Ssy) c = C_SSY;
-        else if (nm == T.O_Pbk) c = C_PBK;
-        else if (nm == T.O_Pcnt) c = C_PCNT;
-        else if (nm == T.O_Sync) c = C_SYNC;
-        else if (nm == T.O_Brk) c = C_BRK;
-        else if (nm == T.O_Cont) c = C_CONT;
-        else if (nm == T.O_Bra || nm == T.O_Jmp) c = C_BRA;
-        else if (nm == T.O_Brx || nm == T.O_Jmx) c = C_BRX;
-        else if (nm == T.O_Exit || nm == T.O_Ret) c = C_EXIT;
-        cat[(size_t)i] = (int8_t)c;
+        cat[(size_t)i] = (int8_t)I::cf_kind_q(prog.q[i], nm);
         tgt[(size_t)i] = prog.target(i);
-        RSet u = prog.defs[i];
+        int bp, bi;
+        if (I::branch_cond(prog.q[i], nm, &bp, &bi) && (bp != PT || bi)) {
+            bpn[(size_t)i] = (int8_t)bp;
+            binv[(size_t)i] = (int8_t)bi;
+        }
+        if (cat[(size_t)i] == C_CALL) call_ret[(size_t)i] = i + 1 < n ? i + 1 : -1;
+        typename I::RSet u = prog.defs[i];
         u.unite(prog.maydefs[i]);
         std::vector<int> lst;
         u.list(lst);
         dd[(size_t)i].assign(lst.begin(), lst.end());
-        pnum[(size_t)i] = (int8_t)((prog.q[i] >> 16) & 7);
-        pinv[(size_t)i] = (int8_t)((prog.q[i] >> 19) & 1);
+        pnum[(size_t)i] = (int8_t)I::guard_pred(prog.q[i]);
+        pinv[(size_t)i] = (int8_t)I::guard_inv(prog.q[i]);
         nopred[(size_t)i] = (char)T.no_pred[(size_t)nm];
     }
 
@@ -235,10 +233,8 @@ void Spec::init(const Program &prog, int opt_bank,
 
     copy_src.assign((size_t)n, -1);
     for (int i = 0; i < n; i++) {
-        if (prog.op[i] != T.O_Mov) continue;
-        u64 q = prog.q[i];
-        if (srcb_form(q) != FORM_REG) continue;
-        int d = (int)(q & 0xFF), s = (int)((q >> 20) & 0xFF);
+        int d, s;
+        if (!I::prop_copy(prog.q[i], prog.op[i], &d, &s)) continue;
         if (d == RZ || s == RZ || d == s) continue;
         copy_src[(size_t)i] = (d << 8) | s;
     }
@@ -246,42 +242,23 @@ void Spec::init(const Program &prog, int opt_bank,
     cb_src_d.assign((size_t)n, -1);
     cb_src_key.assign((size_t)n, 0);
     for (int i = 0; i < n; i++) {
-        if (prog.op[i] != T.O_Mov) continue;
-        u64 q = prog.q[i];
-        if (srcb_form(q) != FORM_CBUF) continue;
-        int d = (int)(q & 0xFF);
-        int b = cbuf_bank(q), o = cbuf_off(q);
+        int d, b, o;
+        if (!I::cbuf_copy(prog.q[i], prog.op[i], &d, &b, &o)) continue;
         if (d == RZ || b == opt_bank || b == 1) continue;
         cb_src_d[(size_t)i] = d;
         cb_src_key[(size_t)i] = (int32_t)(CBBASE - ((b << 20) | o));
     }
 
     cb_slots.assign((size_t)n, {});
-    for (int i = 0; i < n; i++) {
-        int nm = prog.op[i];
-        if (!T.alu_cbuf[(size_t)nm] || srcb_form(prog.q[i]) != FORM_REG) continue;
-
-        if (srcc_form(prog.q[i])) continue;
-        int offs[8];
-        int m = gpr_src_offsets(prog.q[i], nm, prog.props[i], offs);
-        for (int k = 0; k < m; k++) {
-            if (offs[k] == 20 || offs[k] == 39) {
-                int r = (int)((prog.q[i] >> offs[k]) & 0xFF);
-                if (r != RZ) cb_slots[(size_t)i].push_back(r);
-            }
-        }
-    }
+    for (int i = 0; i < n; i++) I::cbfold_regs(prog, i, cb_slots[(size_t)i]);
 
     norw.assign((size_t)n, 0);
-    for (int i = 0; i < n; i++) {
-        int nm = prog.op[i];
-        norw[(size_t)i] = (char)(T.tex_bases[(size_t)nm] || nm == T.O_Shfl ||
-                                 mem_data_regs(prog.q[i], nm) > 1);
-    }
+    for (int i = 0; i < n; i++)
+        norw[(size_t)i] = (char)I::wide_dest(prog.q[i], prog.op[i]);
 
     cse_ok.assign((size_t)n, 0);
     cse_dst.assign((size_t)n, 0);
-    cse_base_q.assign((size_t)n, 0);
+    cse_base_q.assign((size_t)n, Word());
     cse_srcoff.assign((size_t)n, {});
     cse_pmask.assign((size_t)n, Mask());
     for (int i = 0; i < n; i++) {
@@ -289,25 +266,22 @@ void Spec::init(const Program &prog, int opt_bank,
 
         if (!T.pure_cse[(size_t)nm] &&
             !(g_cse_mov32i && nm == T.O_Mov32i)) continue;
-        RSet u = prog.defs[i];
+        typename I::RSet u = prog.defs[i];
         u.unite(prog.maydefs[i]);
         std::vector<int> lst; u.list(lst);
         if (lst.size() != 1) continue;
         int d = lst[0];
         if (d >= PREG || d == RZ) continue;
-        u64 q = prog.q[i];
         int offs[8];
-        int m = gpr_src_offsets(q, nm, prog.props[i], offs);
-        u64 mask = 0xFFull | (0xFull << 16);
-        for (int k = 0; k < m; k++) mask |= 0xFFull << offs[k];
+        int m = I::src_fields(prog.q[i], nm, prog.props[i], offs);
         Mask pm;
-        int gp = (int)((q >> 16) & 7);
+        int gp = I::guard_pred(prog.q[i]);
         std::vector<int> uu; prog.uses[i].list(uu);
         for (int r : uu)
             if (r >= PREG && !(r == PREG + gp && gp != PT)) pm.set(r);
         cse_ok[(size_t)i] = 1;
         cse_dst[(size_t)i] = d;
-        cse_base_q[(size_t)i] = q & ~mask;
+        cse_base_q[(size_t)i] = I::cse_base(prog.q[i], offs, m);
         cse_srcoff[(size_t)i].assign(offs, offs + m);
         cse_pmask[(size_t)i] = pm;
     }
@@ -317,10 +291,10 @@ void Spec::init(const Program &prog, int opt_bank,
     for (int i = 0; i < n; i++) {
         int nm = prog.op[i];
         if (nm != T.O_Stl && nm != T.O_Ldl) continue;
-        u64 q = prog.q[i];
-        if (((q >> 8) & 0xFF) != (u64)RZ) { lm_ok = false; continue; }
-        int32_t off = lmem_off(q);
-        int w = mem_data_regs(q, nm);
+        int areg, w;
+        int32_t off;
+        I::lmem_access(prog.q[i], nm, &areg, &off, &w);
+        if (areg != RZ) { lm_ok = false; continue; }
         if (off < 0 || (off & 3) || off > 0x40000) { lm_ok = false; continue; }
         if ((off >> 2) + w > LMMAX) { lm_ok = false; continue; }
         LmSlot s;
@@ -366,19 +340,18 @@ void Spec::init(const Program &prog, int opt_bank,
         is_free[(size_t)i] = T.freebie[(size_t)nm];
     }
 
-    truesrc.assign((size_t)n, RSet());
+    truesrc.assign((size_t)n, typename I::RSet());
     for (int i = 0; i < n; i++) {
         if (prog.guarded(i) || prog.never(i)) {
-            u64 orig = prog.q[i];
-            u64 forced = (orig & ~((u64)0xF << 16)) | ((u64)PT << 16);
-            RSet d, md, u;
-            Program::du_word(forced, prog.op[i], prog.props[i], d, md, u);
+            Word forced = prog.q[i];
+            I::set_guard(forced, PT, 0);
+            typename I::RSet d, md, u;
+            I::du(forced, prog.op[i], prog.props[i], d, md, u);
             truesrc[(size_t)i] = u;
         } else {
             truesrc[(size_t)i] = prog.uses[i];
         }
     }
-    n_fixed = 0;
     if (fix_maydef) {
         for (int i = 0; i < n; i++) {
             auto &m = maydef_set[(size_t)i];
@@ -389,7 +362,6 @@ void Spec::init(const Program &prog, int opt_bank,
             std::vector<int> keep;
             for (int r : m) if (!truesrc[(size_t)i].has(r)) keep.push_back(r);
             m.swap(keep);
-            n_fixed++;
         }
     }
 
@@ -413,19 +385,39 @@ void Spec::init(const Program &prog, int opt_bank,
         int nm = prog.op[i];
         if (!T.tex_bases[(size_t)nm]) continue;
         tex_dstgroup[(size_t)i] = 1;
-        if (!texrw || nm != T.O_Texs) continue;
-        int tgtf = (int)((prog.q[i] >> 53) & 0xF);
-        static const int TS[14][2] = {
-            {1,0},{1,1},{1,1},{2,1},{2,1},{2,2},{2,1},{2,1},{2,1},{2,2},{2,1},
-            {2,1},{2,1},{2,2}};
-        int k = tgtf < 13 ? tgtf : 13;
-        if (!(TS[k][0] == 1 && TS[k][1] == 1)) continue;
+        if (!texrw || !I::tex_rw_ok(prog.q[i], nm)) continue;
         tex_rw[(size_t)i] = 1;
         norw[(size_t)i] = 0;
     }
 }
 
-int Spec::cbfold_slot(int i, const EMap &e) const {
+void Sm50::cbfold_regs(const ProgramT<Sm50> &prog, int i, std::vector<int> &out) {
+    const OpSets &T = S();
+    int nm = prog.op[i];
+    if (!T.alu_cbuf[(size_t)nm] || srcb_form(prog.q[i]) != FORM_REG) return;
+    if (srcc_form(prog.q[i])) return;
+    int offs[8];
+    int m = gpr_src_offsets(prog.q[i], nm, prog.props[i], offs);
+    for (int k = 0; k < m; k++) {
+        if (offs[k] == 20 || offs[k] == 39) {
+            int r = (int)((prog.q[i] >> offs[k]) & 0xFF);
+            if (r != RZ) out.push_back(r);
+        }
+    }
+}
+
+bool Sm50::tex_rw_ok(u64 q, int nm) {
+    if (nm != S().O_Texs) return false;
+    int tgtf = (int)((q >> 53) & 0xF);
+    static const int TS[14][2] = {
+        {1,0},{1,1},{1,1},{2,1},{2,1},{2,2},{2,1},{2,1},{2,1},{2,2},{2,1},
+        {2,1},{2,1},{2,2}};
+    int k = tgtf < 13 ? tgtf : 13;
+    return TS[k][0] == 1 && TS[k][1] == 1;
+}
+
+template <>
+int SpecT<Sm50>::cbfold_slot(int i, const EMap &e) const {
     if (!cbfold) return -1;
     if (norw[(size_t)i]) return -1;
     const std::vector<int> &slots = cb_slots[(size_t)i];
@@ -454,7 +446,8 @@ int Spec::cbfold_slot(int i, const EMap &e) const {
     return -1;
 }
 
-bool Spec::cb(int b, int off, u32 *out) const {
+template <class I>
+bool SpecT<I>::cb(int b, int off, u32 *out) const {
     if (b == bank) {
         int k = off >> 2;
         if (k >= 0 && k < (int)opt->size()) { *out = (*opt)[(size_t)k] & M32; return true; }
@@ -464,7 +457,8 @@ bool Spec::cb(int b, int off, u32 *out) const {
     return false;
 }
 
-bool Spec::regval(const VMap &v, int r, u32 *out) const {
+template <class I>
+bool SpecT<I>::regval(const VMap &v, int r, u32 *out) const {
     if (r == RZ) { *out = 0; return true; }
     const u32 *x = vmap_get(v, r);
     if (!x) return false;
@@ -472,7 +466,26 @@ bool Spec::regval(const VMap &v, int r, u32 *out) const {
     return true;
 }
 
-bool Spec::srcbval(u64 q, const VMap &v, u32 *out) const {
+template <class I>
+int SpecT<I>::ret_target(int i, const VMap &v, const std::vector<int64_t> &stk) const {
+    int byreg = -1, bystk = -1;
+    u32 a;
+    if (regval(v, I::indirect_reg(p->q[i]), &a)) {
+        byreg = I::indirect_slot(*p, i, a);
+        if (byreg < 0) fail("return at %d: its register holds %#x, no instruction", i, a);
+    }
+    if (!stk.empty() && (int)(stk.back() >> 32) == 3)
+        bystk = (int)(int32_t)(u32)(stk.back() & 0xFFFFFFFF);
+    if (byreg >= 0 && bystk >= 0 && byreg != bystk)
+        fail("return at %d: its register says slot %d, the call stack %d", i, byreg,
+             bystk);
+    int t = byreg >= 0 ? byreg : bystk;
+    if (t < 0) fail("return at %d: where it returns to is not known", i);
+    return t;
+}
+
+template <>
+bool SpecT<Sm50>::srcbval(u64 q, const VMap &v, u32 *out) const {
     int f = srcb_form(q);
     if (f == FORM_IMM) { *out = (u32)imm20i_signed(q); return true; }
     if (f == FORM_CBUF) return cb(cbuf_bank(q), cbuf_off(q), out);
@@ -484,7 +497,8 @@ bool Spec::srcbval(u64 q, const VMap &v, u32 *out) const {
     return true;
 }
 
-Tri Spec::predval(const VMap &v, int pn, int inv) const {
+template <class I>
+Tri SpecT<I>::predval(const VMap &v, int pn, int inv) const {
     bool b;
     if (pn == PT) b = true;
     else {
@@ -496,8 +510,19 @@ Tri Spec::predval(const VMap &v, int pn, int inv) const {
     return b ? TRI_T : TRI_F;
 }
 
-void Spec::lop_out(u64 q, int lop, bool ha, u32 a, bool hb, u32 b, int d,
-                   int pd, int pop, EvalOut &out) const {
+template <class I>
+Tri SpecT<I>::cond_of(const VMap &v, int i) const {
+    Tri g = nopred[(size_t)i] ? TRI_T
+                              : predval(v, pnum[(size_t)i], pinv[(size_t)i]);
+    if (g == TRI_F || bpn[(size_t)i] < 0) return g;
+    Tri c = predval(v, bpn[(size_t)i], binv[(size_t)i]);
+    if (c == TRI_F) return TRI_F;
+    return (g == TRI_T && c == TRI_T) ? TRI_T : TRI_U;
+}
+
+template <>
+void SpecT<Sm50>::lop_out(u64 q, int lop, bool ha, u32 a, bool hb, u32 b, int d,
+                          int pd, int pop, EvalOut &out) const {
     (void)q;
     bool hr = false;
     u32 r = 0;
@@ -531,7 +556,8 @@ void Spec::lop_out(u64 q, int lop, bool ha, u32 a, bool hb, u32 b, int d,
     }
 }
 
-void Spec::eval5(int i, const VMap &v, EvalOut &out) const {
+template <>
+void SpecT<Sm50>::eval5(int i, const VMap &v, EvalOut &out) const {
     const OpSets &T = S();
     u64 q = p->q[i];
     int nm = p->op[i];
@@ -724,7 +750,8 @@ void Spec::eval5(int i, const VMap &v, EvalOut &out) const {
     }
 }
 
-void Spec::eval(int i, const VMap &v, EvalOut &out) const {
+template <>
+void SpecT<Sm50>::eval(int i, const VMap &v, EvalOut &out) const {
     eval5(i, v, out);
     if (out.present) return;
     if (!folds) return;
@@ -957,8 +984,8 @@ void Spec::eval(int i, const VMap &v, EvalOut &out) const {
     }
 }
 
-
-void Spec::run(const std::vector<u32> &optvals, RunRes &R) {
+template <class I>
+void SpecT<I>::run(const std::vector<u32> &optvals, RunRes &R) {
     opt = &optvals;
     int n = p->n;
 
@@ -1017,8 +1044,7 @@ void Spec::run(const std::vector<u32> &optvals, RunRes &R) {
         int nxt = (i + 1 < n) ? i + 1 : -1;
         int c = cat[(size_t)i];
 
-        Tri g = nopred[(size_t)i] ? TRI_T
-                                  : predval(v, pnum[(size_t)i], pinv[(size_t)i]);
+        Tri g = cond_of(v, i);
         if (g == TRI_F) {
             if (nxt >= 0) push(nxt, stk, v);
             continue;
@@ -1076,17 +1102,28 @@ void Spec::run(const std::vector<u32> &optvals, RunRes &R) {
             if (t >= 0) push(t, stk, out);
             if (g != TRI_T && nxt >= 0) push(nxt, stk, out);
         } else if (c == C_BRX) {
-            int ra = (int)((p->q[i] >> 8) & 0xFF);
             u32 a;
-            if (regval(out, ra, &a)) {
-                int j = p->snap((int)(a & M32));
-                if (j >= 0) {
-                    int diff = p->rel[(size_t)j] - (int)(a & M32);
-                    if (diff == 0 || diff == 8) push(j, stk, out);
-                }
+            if (regval(out, I::indirect_reg(p->q[i]), &a)) {
+                int j = I::indirect_slot(*p, i, a);
+                if (j >= 0) push(j, stk, out);
             }
             if (g != TRI_T && nxt >= 0) push(nxt, stk, out);
         } else if (c == C_EXIT) {
+            if (g != TRI_T && nxt >= 0) push(nxt, stk, out);
+        } else if (c == C_CALL) {
+
+            if ((int)stk.size() >= MAX_DEPTH) fail("call at %d: nesting too deep", i);
+            std::vector<int64_t> ns = stk;
+            ns.push_back(((int64_t)3 << 32) | (int64_t)(u32)call_ret[(size_t)i]);
+            int t = tgt[(size_t)i];
+            if (t < 0) fail("call at %d: no target", i);
+            push(t, ns, out);
+            if (g != TRI_T && nxt >= 0) push(nxt, stk, out);
+        } else if (c == C_RET) {
+            int t = ret_target(i, out, stk);
+            std::vector<int64_t> ns = stk;
+            if (!ns.empty() && (int)(ns.back() >> 32) == 3) ns.pop_back();
+            push(t, ns, out);
             if (g != TRI_T && nxt >= 0) push(nxt, stk, out);
         } else {
             if (nxt >= 0) push(nxt, stk, out);
@@ -1097,10 +1134,10 @@ void Spec::run(const std::vector<u32> &optvals, RunRes &R) {
     R.in_reach.assign((size_t)n, 0);
     for (int i = 0; i < n; i++)
         if (!R.stacks[(size_t)i].empty()) { R.reach.push_back(i); R.in_reach[(size_t)i] = 1; }
-    R.states = steps;
 }
 
-void Spec::succ_of(const RunRes &R, std::vector<std::vector<int>> &succ) const {
+template <class I>
+void SpecT<I>::succ_of(const RunRes &R, std::vector<std::vector<int>> &succ) const {
     int n = p->n;
     succ.assign((size_t)n, {});
     VMap out;
@@ -1110,8 +1147,7 @@ void Spec::succ_of(const RunRes &R, std::vector<std::vector<int>> &succ) const {
         const VMap &v = R.vals[(size_t)i];
         s.clear();
         int nxt = (i + 1 < n) ? i + 1 : -1;
-        Tri g = nopred[(size_t)i] ? TRI_T
-                                  : predval(v, pnum[(size_t)i], pinv[(size_t)i]);
+        Tri g = cond_of(v, i);
         if (g == TRI_F) {
             if (nxt >= 0) succ[(size_t)i].push_back(nxt);
             continue;
@@ -1162,17 +1198,20 @@ void Spec::succ_of(const RunRes &R, std::vector<std::vector<int>> &succ) const {
             if (t >= 0) s.insert(t);
             if (g != TRI_T && nxt >= 0) s.insert(nxt);
         } else if (c == C_BRX) {
-            int ra = (int)((p->q[i] >> 8) & 0xFF);
             u32 a;
-            if (regval(out, ra, &a)) {
-                int j = p->snap((int)(a & M32));
-                if (j >= 0) {
-                    int diff = p->rel[(size_t)j] - (int)(a & M32);
-                    if (diff == 0 || diff == 8) s.insert(j);
-                }
+            if (regval(out, I::indirect_reg(p->q[i]), &a)) {
+                int j = I::indirect_slot(*p, i, a);
+                if (j >= 0) s.insert(j);
             }
             if (g != TRI_T && nxt >= 0) s.insert(nxt);
         } else if (c == C_EXIT) {
+            if (g != TRI_T && nxt >= 0) s.insert(nxt);
+        } else if (c == C_CALL) {
+            if (tgt[(size_t)i] >= 0) s.insert(tgt[(size_t)i]);
+            if (g != TRI_T && nxt >= 0) s.insert(nxt);
+        } else if (c == C_RET) {
+            for (int sid : R.stacks[(size_t)i])
+                s.insert(ret_target(i, out, R.pool.get(sid)));
             if (g != TRI_T && nxt >= 0) s.insert(nxt);
         } else {
             if (nxt >= 0) s.insert(nxt);
@@ -1181,7 +1220,9 @@ void Spec::succ_of(const RunRes &R, std::vector<std::vector<int>> &succ) const {
     }
 }
 
-void Spec::copyprop_pass(RunRes &R) const {
+template <class I>
+void SpecT<I>::copyprop_pass(RunRes &R) const {
+    typedef AvMapT<I> AvMap;
     int n = p->n;
     R.env.assign((size_t)n, EMap());
     std::vector<AvMap> av_in((size_t)n);
@@ -1211,9 +1252,7 @@ void Spec::copyprop_pass(RunRes &R) const {
         oav = av;
         if (g_fmac) omul = R.mul_in[(size_t)i];
 
-        if (g == TRI_F) {
-
-        } else {
+        if (!(g == TRI_F)) {
             const Mask &kill = dall_mask[(size_t)i];
             if (kill.any()) {
                 for (auto it = out.begin(); it != out.end();) {
@@ -1227,7 +1266,7 @@ void Spec::copyprop_pass(RunRes &R) const {
                 int o = lm[(size_t)i].off, w = lm[(size_t)i].w;
                 bool is_store = lm[(size_t)i].store;
                 if (is_store) {
-                    int sr = (int)(p->q[i] & 0xFF);
+                    int sr = I::dest_reg(p->q[i]);
                     for (int k = 0; k < w; k++) {
                         int key = LMBASE + o + k;
                         if (g == TRI_T && (sr == RZ || sr + k < RZ)) {
@@ -1243,7 +1282,7 @@ void Spec::copyprop_pass(RunRes &R) const {
                         }
                     }
                 } else if (g == TRI_T && w == 1) {
-                    int d = (int)(p->q[i] & 0xFF);
+                    int d = I::dest_reg(p->q[i]);
                     auto it = e.find(LMBASE + o);
                     if (d != RZ && it != e.end() && it->second != d)
                         out[d] = it->second;
@@ -1262,10 +1301,8 @@ void Spec::copyprop_pass(RunRes &R) const {
             if (g_fmac) {
                 if (kill.any() && !omul.empty()) {
                     for (auto it = omul.begin(); it != omul.end();) {
-                        u64 qm = p->q[it->second];
-                        int ma = (int)((qm >> 8) & 0xFF);
-                        int mb = (((qm >> 59) & 0x1F) == 0x0B)
-                                     ? (int)((qm >> 20) & 0xFF) : RZ;
+                        int ma, mb;
+                        fmac_mul_srcs(it->second, &ma, &mb);
                         bool drop = kill.test(it->first) ||
                                     (ma != RZ && kill.test(ma)) ||
                                     (mb != RZ && kill.test(mb));
@@ -1273,7 +1310,7 @@ void Spec::copyprop_pass(RunRes &R) const {
                     }
                 }
                 if (g == TRI_T && fmac_mul_ok(i))
-                    omul[(int)(p->q[i] & 0xFF)] = i;
+                    omul[I::dest_reg(p->q[i])] = i;
             }
 
             if (cse) {
@@ -1285,12 +1322,11 @@ void Spec::copyprop_pass(RunRes &R) const {
                 }
                 if (cse_ok[(size_t)i] && g == TRI_T) {
                     int d = cse_dst[(size_t)i];
-                    u64 q = p->q[i];
-                    CseKey key;
+                    CseKeyT<I> key;
                     key.op = p->op[i];
                     key.qm = cse_base_q[(size_t)i];
                     for (int o : cse_srcoff[(size_t)i]) {
-                        int r = (int)((q >> o) & 0xFF);
+                        int r = I::field_reg(p->q[i], o);
                         auto it = e.find(r);
                         key.add(it != e.end() ? it->second : r);
                     }
@@ -1365,7 +1401,15 @@ static const u64 FFMA_RCR_BASE = 0x4980000000000000ull;
 static const u64 M_FTZ = MB(44), M_NEGB = MB(45),
                  M_ABSA = MB(46), M_NEGA = MB(48), M_ABSB = MB(49);
 
-bool Spec::fmac_mul_ok(int j) const {
+template <>
+void SpecT<Sm50>::fmac_mul_srcs(int j, int *ma, int *mb) const {
+    u64 qm = p->q[j];
+    *ma = (int)((qm >> 8) & 0xFF);
+    *mb = (((qm >> 59) & 0x1F) == 0x0B) ? (int)((qm >> 20) & 0xFF) : RZ;
+}
+
+template <>
+bool SpecT<Sm50>::fmac_mul_ok(int j) const {
     const OpSets &T = S();
     if (p->op[j] != T.O_Fmul) return false;
     if (norw[(size_t)j]) return false;
@@ -1383,11 +1427,8 @@ bool Spec::fmac_mul_ok(int j) const {
     return true;
 }
 
-long long g_fm_shape = 0, g_fm_nofact = 0, g_fm_envmap = 0, g_fm_known = 0,
-          g_fm_cb = 0, g_fm_mismatch = 0, g_fm_ok = 0;
-long long g_fm_final = 0, g_fm_revert = 0, g_fm_progs = 0, g_fm_want = 0;
-
-bool Spec::fmac_ok(const RunRes &R, int i, int *jout, int *slotout) const {
+template <>
+bool SpecT<Sm50>::fmac_ok(const RunRes &R, int i, int *jout, int *slotout) const {
     if (!g_fmac || R.mul_in.empty()) return false;
     const OpSets &T = S();
     if (p->op[i] != T.O_Fadd) return false;
@@ -1403,24 +1444,20 @@ bool Spec::fmac_ok(const RunRes &R, int i, int *jout, int *slotout) const {
     if (cbfold_slot(i, e) >= 0) return false;
     const std::unordered_map<int, int> &mm = R.mul_in[(size_t)i];
     if (mm.empty()) return false;
-    g_fm_shape++;
     int ra = (int)((qa >> 8) & 0xFF), rb = (int)((qa >> 20) & 0xFF);
-    bool sawfact = false;
     for (int k = 0; k < 2; k++) {
         int slot = k ? 20 : 8;
         int pr = k ? rb : ra, other = k ? ra : rb;
         if (pr == RZ || pr == other) continue;
         auto it = mm.find(pr);
         if (it == mm.end()) {
-            if (e.find(pr) != e.end()) g_fm_envmap++;
             continue;
         }
-        sawfact = true;
         int j = it->second;
 
-        if (e.find(pr) != e.end()) { g_fm_envmap++; continue; }
-        if (vmap_get(R.vals[(size_t)i], pr)) { g_fm_known++; continue; }
-        if (cbfold_slot(j, R.env[(size_t)j]) >= 0) { g_fm_cb++; continue; }
+        if (e.find(pr) != e.end()) continue;
+        if (vmap_get(R.vals[(size_t)i], pr)) continue;
+        if (cbfold_slot(j, R.env[(size_t)j]) >= 0) continue;
         u64 qm = p->q[j];
         bool ok = true;
         int nsrc = (((qm >> 59) & 0x1F) == 0x0B) ? 2 : 1;
@@ -1437,17 +1474,16 @@ bool Spec::fmac_ok(const RunRes &R, int i, int *jout, int *slotout) const {
             if ((x1 != nullptr) != (x2 != nullptr)) ok = false;
             else if (x1 && *x1 != *x2) ok = false;
         }
-        if (!ok) { g_fm_mismatch++; continue; }
-        g_fm_ok++;
+        if (!ok) continue;
         if (jout) *jout = j;
         if (slotout) *slotout = slot;
         return true;
     }
-    if (!sawfact) g_fm_nofact++;
     return false;
 }
 
-u64 Spec::fmac_word(const RunRes &R, int i, int j, int slot) const {
+template <>
+u64 SpecT<Sm50>::fmac_word(const RunRes &R, int i, int j, int slot) const {
     (void)R;
     u64 qa = p->q[i], qm = p->q[j];
     int mt5 = (int)((qm >> 59) & 0x1F);
@@ -1470,7 +1506,8 @@ u64 Spec::fmac_word(const RunRes &R, int i, int j, int slot) const {
     return q;
 }
 
-void Spec::fmac_uses(const RunRes &R, int i, std::vector<int> &out) const {
+template <>
+void SpecT<Sm50>::fmac_uses(const RunRes &R, int i, std::vector<int> &out) const {
     out.clear();
     int j = R.fmac[(size_t)i], slot = R.fmac_slot[(size_t)i];
     int pr = (int)((p->q[i] >> (slot == 8 ? 8 : 20)) & 0xFF);
@@ -1485,62 +1522,51 @@ void Spec::fmac_uses(const RunRes &R, int i, std::vector<int> &out) const {
     out.erase(std::unique(out.begin(), out.end()), out.end());
 }
 
-static long long *const FM_CTRS[] = {
-    &g_fm_shape, &g_fm_nofact, &g_fm_envmap, &g_fm_known, &g_fm_cb,
-    &g_fm_mismatch, &g_fm_ok, &g_fm_final, &g_fm_revert, &g_fm_progs,
-    &g_fm_want};
-static const int FM_N = (int)(sizeof FM_CTRS / sizeof FM_CTRS[0]);
-
+template <class I>
 struct Run3Cache {
     bool valid = false;
-    const Spec *sp = nullptr;
+    const SpecT<I> *sp = nullptr;
     std::vector<u32> opt;
-    bool fmac = false, fmac_all = false;
+    bool fmac = false;
     RunRes R;
-    long long d[FM_N] = {0};
 };
-static Run3Cache g_r3;
-long long g_r3_hit = 0, g_r3_miss = 0;
+template <class I> static Run3Cache<I> g_r3;
+long long g_r3_miss = 0;
 
+template <class I>
 void run3_cache_clear() {
-    Run3Cache empty;
-    g_r3 = std::move(empty);
+    Run3Cache<I> empty;
+    g_r3<I> = std::move(empty);
 }
 
-const RunRes &run3_cached(Spec &sp, const std::vector<u32> &optvals) {
+template <class I>
+const RunRes &run3_cached(SpecT<I> &sp, const std::vector<u32> &optvals) {
+    Run3Cache<I> &g_r3 = ub::g_r3<I>;
     if (g_r3.valid && g_r3.sp == &sp && g_r3.fmac == g_fmac &&
-        g_r3.fmac_all == g_fmac_all && g_r3.opt == optvals) {
+        g_r3.opt == optvals) {
         sp.opt = &optvals;
-        for (int i = 0; i < FM_N; i++) *FM_CTRS[i] += g_r3.d[i];
-        g_r3_hit++;
         return g_r3.R;
     }
-    run3_cache_clear();
-    long long c0[FM_N];
-    for (int i = 0; i < FM_N; i++) c0[i] = *FM_CTRS[i];
+    run3_cache_clear<I>();
     sp.run3(optvals, g_r3.R);
-    for (int i = 0; i < FM_N; i++) g_r3.d[i] = *FM_CTRS[i] - c0[i];
     g_r3.sp = &sp;
     g_r3.opt = optvals;
     g_r3.fmac = g_fmac;
-    g_r3.fmac_all = g_fmac_all;
     g_r3.valid = true;
     g_r3_miss++;
     return g_r3.R;
 }
 
-void Spec::run3(const std::vector<u32> &optvals, RunRes &R) {
-    const OpSets &T = S();
+template <class I>
+void SpecT<I>::run3(const std::vector<u32> &optvals, RunRes &R) {
+    const OpSets &T = I::sets();
     int n = p->n;
     run(optvals, R);
 
     succ_of(R, R.succ);
 
     R.guard.assign((size_t)n, TRI_U);
-    for (int i : R.reach)
-        R.guard[(size_t)i] = nopred[(size_t)i]
-            ? TRI_T
-            : predval(R.vals[(size_t)i], pnum[(size_t)i], pinv[(size_t)i]);
+    for (int i : R.reach) R.guard[(size_t)i] = cond_of(R.vals[(size_t)i], i);
 
     if (copyprop) copyprop_pass(R);
     else R.env.assign((size_t)n, EMap());
@@ -1559,28 +1585,49 @@ void Spec::run3(const std::vector<u32> &optvals, RunRes &R) {
 
     (void)T;
     dce_pass(R);
-    if (g_fmac)
-        for (int i : R.kept) if (R.fmac[(size_t)i] >= 0) g_fm_want++;
 
-    for (int round = 0; g_fmac && !g_fmac_all && round < 4; round++) {
+    for (int round = 0; g_fmac && round < 4; round++) {
         bool again = false;
         for (int i : R.reach) {
             int j = R.fmac[(size_t)i];
             if (j >= 0 && R.need[(size_t)j]) {
-                R.fmac[(size_t)i] = -1; again = true; g_fm_revert++;
+                R.fmac[(size_t)i] = -1; again = true;
             }
         }
         if (!again) break;
         dce_pass(R);
     }
-    if (g_fmac) {
-        g_fm_progs++;
-        for (int i : R.kept) if (R.fmac[(size_t)i] >= 0) g_fm_final++;
-    }
 }
 
-void Spec::dce_pass(RunRes &R) {
-    const OpSets &T = S();
+template <class I>
+void SpecT<I>::keep_jumps_over_kept(RunRes &R) const {
+    int n = p->n;
+    std::vector<int> pre((size_t)n + 1, 0);
+    for (int round = 0; round < 64; round++) {
+        for (int i = 0; i < n; i++)
+            pre[(size_t)i + 1] = pre[(size_t)i] + (R.need[(size_t)i] ? 1 : 0);
+        bool ch = false;
+        for (int i : R.reach) {
+            if (R.need[(size_t)i] || R.guard[(size_t)i] == TRI_F) continue;
+            if (!is_branchy[(size_t)i]) continue;
+            const std::vector<int> &sc = R.succ[(size_t)i];
+            if (sc.empty()) fail("branch at %d: its target is not known", i);
+            if (sc.size() != 1) continue;
+            int t = sc[0];
+            if (t <= i + 1 || pre[(size_t)t] == pre[(size_t)i + 1]) continue;
+            R.need[(size_t)i] = 1;
+            R.gen[(size_t)i].clear();
+            R.kill[(size_t)i].clear();
+            ch = true;
+        }
+        if (!ch) return;
+    }
+    fail("kept branches did not settle");
+}
+
+template <class I>
+void SpecT<I>::dce_pass(RunRes &R) {
+    const OpSets &T = I::sets();
     int n = p->n;
     R.gen.assign((size_t)n, Mask());
     R.kill.assign((size_t)n, Mask());
@@ -1602,7 +1649,7 @@ void Spec::dce_pass(RunRes &R) {
                 const LmSlot &sl = lm[(size_t)i];
                 if (!sl.store && sl.w == 1) {
                     auto it = e.find(LMBASE + sl.off);
-                    if (it != e.end() && it->second == (int32_t)(p->q[i] & 0xFF))
+                    if (it != e.end() && it->second == (int32_t)I::dest_reg(p->q[i]))
                         noop = true;
                 }
             } else if (cbfold && cb_src_d[(size_t)i] >= 0) {
@@ -1628,7 +1675,7 @@ void Spec::dce_pass(RunRes &R) {
         bool rw = !norw[(size_t)i];
         bool texop = tex_rw[(size_t)i];
         int cbslot = cbfold_slot(i, e);
-        int cbreg = (cbslot >= 0) ? (int)((p->q[i] >> cbslot) & 0xFF) : -1;
+        int cbreg = (cbslot >= 0) ? I::field_reg(p->q[i], cbslot) : -1;
         Mask m;
         std::vector<int> eff;
         const std::vector<int> *ul = &use_list[(size_t)i];
@@ -1641,7 +1688,7 @@ void Spec::dce_pass(RunRes &R) {
             if (drop && std::binary_search(drop->begin(), drop->end(), r)) continue;
             if (r >= LMBIT) { m.set(r); continue; }
             if (r >= PREG) {
-                if (vmap_get(v, r)) continue;
+                if (vmap_get(v, r) && I::lit_read(*p, i, r)) continue;
                 m.set(r);
                 continue;
             }
@@ -1659,7 +1706,7 @@ void Spec::dce_pass(RunRes &R) {
             }
             if (a < 0) {
 
-                if (r == cbreg) continue;
+                if (r == cbreg && !(g != TRI_T && p->maydefs[i].has(r))) continue;
                 a = r;
             }
             m.set(a);
@@ -1693,7 +1740,6 @@ void Spec::dce_pass(RunRes &R) {
     std::vector<char> base((size_t)n, 0);
     for (int i : R.reach) {
         if (R.guard[(size_t)i] == TRI_F) { base[(size_t)i] = 0; continue; }
-        int nm = p->op[i];
         if (is_se[(size_t)i]) base[(size_t)i] = 1;
         else if (is_free[(size_t)i]) base[(size_t)i] = 0;
         else if (is_pushy[(size_t)i]) base[(size_t)i] = need_push[i];
@@ -1701,10 +1747,10 @@ void Spec::dce_pass(RunRes &R) {
             const std::vector<int> &sc = R.succ[(size_t)i];
             if (sc.size() > 1) base[(size_t)i] = 1;
             else if (!sc.empty() && sc[0] <= i) base[(size_t)i] = 1;
-            else if (nm == T.O_Sync)
+            else if (cat[(size_t)i] == C_SYNC)
                 base[(size_t)i] = (char)kept_push_tgt.count(
                     {C_SSY, sc.empty() ? -1 : sc[0]});
-            else if (nm == T.O_Brk)
+            else if (cat[(size_t)i] == C_BRK)
                 base[(size_t)i] = (char)kept_push_tgt.count(
                     {C_PBK, sc.empty() ? -1 : sc[0]});
             else base[(size_t)i] = 0;
@@ -1722,11 +1768,9 @@ void Spec::dce_pass(RunRes &R) {
             if (p->op[i] == T.O_Stl && !R.dead2[(size_t)i]) R.need[(size_t)i] = 1;
 
     std::vector<int> order(R.reach.rbegin(), R.reach.rend());
-    int rounds = 0;
     bool converged = false;
     Mask lo, li;
     for (int rnd = 0; rnd < 512; rnd++) {
-        rounds++;
         bool changed = false;
         for (int i : order) {
             lo.clear();
@@ -1746,12 +1790,18 @@ void Spec::dce_pass(RunRes &R) {
         if (!changed) { converged = true; break; }
     }
     if (!converged) fail("DVE fixpoint did not converge in 512 sweeps");
-    R.rounds = rounds;
+    if (I::keep_fwd_jumps()) keep_jumps_over_kept(R);
 
     R.kept.clear();
     for (int i : R.reach) if (R.need[(size_t)i]) R.kept.push_back(i);
 
-
 }
+
+template class SpecT<Sm50>;
+template const RunRes &run3_cached<Sm50>(SpecT<Sm50> &, const std::vector<u32> &);
+template void run3_cache_clear<Sm50>();
+template class SpecT<Sm86>;
+template const RunRes &run3_cached<Sm86>(SpecT<Sm86> &, const std::vector<u32> &);
+template void run3_cache_clear<Sm86>();
 
 }

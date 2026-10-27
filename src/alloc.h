@@ -99,41 +99,32 @@ struct Alloc {
     std::unordered_map<int, int> base_root;
     int ndid = 0;
     std::vector<std::pair<int, int>> did_key;
-    int n_after = 0, max_live = 0, undefined_uses = 0;
+    int max_live = 0;
 
     int ord(int i) const { return ordn.at(i); }
     size_t words() const { return (size_t)((K + 63) / 64); }
 };
 
-void allocate(Spec &sp, const RunRes &R, Alloc &al);
+template <class I>
+void allocate(SpecT<I> &sp, const RunRes &R, Alloc &al);
 
-void webreg(Spec &sp, Alloc &al, std::unordered_map<int, int> &wr);
+template <class I>
+void webreg(SpecT<I> &sp, Alloc &al, std::unordered_map<int, int> &wr);
 
-void post_coalesce(Spec &sp, const RunRes &R, Alloc &al,
+template <class I>
+void post_coalesce(SpecT<I> &sp, const RunRes &R, Alloc &al,
                    std::unordered_map<int, int> &wr,
                    std::set<int> &removed,
                    std::unordered_map<int, int> &lmparent);
 
-extern bool g_copyprop_nopin;
-
-struct CopyStats {
-    int cands = 0, merged = 0, already = 0;
-    int rej_pred = 0, rej_constrained = 0, rej_nogpr = 0, rej_interfere = 0,
-        rej_clash = 0;
-    int pin_kept = 0, reverted = 0;
-
-    int lm_cands = 0, lm_merged = 0, lm_rounds = 0, lm_elided = 0;
-
-    int id_cands = 0, id_merged = 0;
-};
-
 extern bool g_idfold;
-int idfold_src(const Spec &sp, const RunRes &R, int i);
+template <class I>
+int idfold_src(const SpecT<I> &sp, const RunRes &R, int i);
 
-int copy_coalesce(Spec &sp, Alloc &al, std::unordered_map<int, int> &wr,
+template <class I>
+int copy_coalesce(SpecT<I> &sp, Alloc &al, std::unordered_map<int, int> &wr,
                   std::set<int> &removed,
-                  std::unordered_map<int, int> &lmparent, CopyStats &cs,
-                  int kinds = 1);
+                  std::unordered_map<int, int> &lmparent, int kinds = 1);
 
 }
 

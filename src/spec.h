@@ -7,36 +7,38 @@
 namespace ub {
 
 struct Mask263 {
-    u64 w[5];
+    u64 w[6];
     Mask263() { std::memset(w, 0, sizeof w); }
     void set(int b) { w[b >> 6] |= (u64)1 << (b & 63); }
     bool operator==(const Mask263 &o) const {
         return std::memcmp(w, o.w, sizeof w) == 0;
     }
     bool intersects(const Mask &m) const {
-        for (int i = 0; i < 5; i++) if (w[i] & m.w[i]) return true;
+        for (int i = 0; i < 6; i++) if (w[i] & m.w[i]) return true;
         return false;
     }
-    void unite(const Mask &m) { for (int i = 0; i < 5; i++) w[i] |= m.w[i]; }
+    void unite(const Mask &m) { for (int i = 0; i < 6; i++) w[i] |= m.w[i]; }
 };
 
-struct CseKey {
+template <class I>
+struct CseKeyT {
+    typedef typename I::Word Word;
     int op;
-    u64 qm;
+    Word qm;
     int32_t ns;
     int32_t s[8];
-    CseKey() : op(0), qm(0), ns(0) { std::memset(s, 0, sizeof s); }
+    CseKeyT() : op(0), qm(), ns(0) { std::memset(s, 0, sizeof s); }
     void add(int32_t v) {
         if (ns >= 8) fail("CseKey: more than 8 GPR sources");
         s[ns++] = v;
     }
-    bool operator==(const CseKey &o) const {
-        if (op != o.op || qm != o.qm || ns != o.ns) return false;
+    bool operator==(const CseKeyT &o) const {
+        if (op != o.op || !I::word_eq(qm, o.qm) || ns != o.ns) return false;
         return std::memcmp(s, o.s, (size_t)ns * sizeof s[0]) == 0;
     }
-    bool operator<(const CseKey &o) const {
+    bool operator<(const CseKeyT &o) const {
         if (op != o.op) return op < o.op;
-        if (qm != o.qm) return qm < o.qm;
+        if (!I::word_eq(qm, o.qm)) return I::word_less(qm, o.qm);
         if (ns != o.ns) return ns < o.ns;
         return std::memcmp(s, o.s, (size_t)ns * sizeof s[0]) < 0;
     }
@@ -46,10 +48,12 @@ struct AvVal {
     Mask263 dm;
     bool operator==(const AvVal &o) const { return d == o.d && dm == o.dm; }
 };
-struct AvMap {
+template <class I>
+struct AvMapT {
+    typedef CseKeyT<I> CseKey;
     typedef std::pair<CseKey, AvVal> value_type;
-    typedef std::vector<value_type>::iterator iterator;
-    typedef std::vector<value_type>::const_iterator const_iterator;
+    typedef typename std::vector<value_type>::iterator iterator;
+    typedef typename std::vector<value_type>::const_iterator const_iterator;
     std::vector<value_type> v;
 
     iterator begin() { return v.begin(); }
@@ -100,14 +104,12 @@ struct StackPoolV {
 };
 
 struct RunRes {
-
     std::vector<char> visited;
     std::vector<int> reach;
     std::vector<char> in_reach;
     std::vector<VMap> vals;
     std::vector<std::vector<int>> stacks;
     StackPoolV pool;
-    long long states = 0;
 
     std::vector<std::vector<int>> succ;
     std::vector<Tri> guard;
@@ -115,7 +117,6 @@ struct RunRes {
     std::vector<int> kept;
     std::vector<EMap> env;
     std::vector<Mask> live_in, gen, kill;
-    int rounds = 0;
 
     std::vector<std::unordered_map<int, int>> mul_in;
     std::vector<int> fmac;
@@ -144,13 +145,14 @@ struct EvalOut {
 extern bool g_cse_mov32i;
 
 extern bool g_fmac;
-extern bool g_fmac_all;
 
 struct LmSlot { int off = 0, w = 0; bool store = false; bool valid = false; };
 
-class Spec {
+template <class I>
+class SpecT {
 public:
-    const Program *p = nullptr;
+    typedef typename I::Word Word;
+    const ProgramT<I> *p = nullptr;
     int bank = 6;
     bool fold_blob = true;
     int folds = 0;
@@ -165,6 +167,10 @@ public:
     std::vector<int8_t> pnum, pinv;
     std::vector<char> nopred;
 
+    std::vector<int8_t> bpn, binv;
+
+    std::vector<int> call_ret;
+
     std::vector<Mask> def_mask, dall_mask;
     std::vector<std::vector<int>> use_list;
     std::vector<std::vector<int>> maydef_set;
@@ -175,19 +181,18 @@ public:
     std::vector<char> norw;
     std::vector<char> cse_ok;
     std::vector<int> cse_dst;
-    std::vector<u64> cse_base_q;
+    std::vector<Word> cse_base_q;
     std::vector<std::vector<int>> cse_srcoff;
     std::vector<Mask> cse_pmask;
     std::vector<LmSlot> lm;
     bool lm_ok = true, lm_live = false, stl_is_se = true, lmval = false;
     std::vector<char> is_se, is_branchy, is_pushy, is_free;
     std::vector<char> tex_rw, tex_dstgroup;
-    std::vector<RSet> truesrc;
-    int n_fixed = 0;
+    std::vector<typename I::RSet> truesrc;
 
     const std::vector<u32> *opt = nullptr;
 
-    void init(const Program &prog, int opt_bank, const std::vector<int> &exit_live,
+    void init(const ProgramT<I> &prog, int opt_bank, const std::vector<int> &exit_live,
               bool lm_dse_, bool cbfold_, int folds_, bool texrw_);
 
     void run(const std::vector<u32> &optvals, RunRes &R);
@@ -198,25 +203,64 @@ public:
     int cbfold_slot(int i, const EMap &env) const;
 
     bool fmac_ok(const RunRes &R, int i, int *jout, int *slotout) const;
-    u64 fmac_word(const RunRes &R, int i, int j, int slot) const;
+    Word fmac_word(const RunRes &R, int i, int j, int slot) const;
     void fmac_uses(const RunRes &R, int i, std::vector<int> &out) const;
     bool fmac_mul_ok(int j) const;
+
+    void fmac_mul_srcs(int j, int *ma, int *mb) const;
 
     bool cb(int bank_, int off, u32 *out) const;
     Tri predval(const VMap &v, int pn, int inv) const;
 
+    Tri cond_of(const VMap &v, int i) const;
+
 private:
-    bool srcbval(u64 q, const VMap &v, u32 *out) const;
+    bool srcbval(Word q, const VMap &v, u32 *out) const;
     bool regval(const VMap &v, int r, u32 *out) const;
-    void lop_out(u64 q, int lop, bool ha, u32 a, bool hb, u32 b, int d, int pd,
+    int ret_target(int i, const VMap &v, const std::vector<int64_t> &stk) const;
+    void lop_out(Word q, int lop, bool ha, u32 a, bool hb, u32 b, int d, int pd,
                  int pop, EvalOut &out) const;
     void eval(int i, const VMap &v, EvalOut &out) const;
     void eval5(int i, const VMap &v, EvalOut &out) const;
     void succ_of(const RunRes &R, std::vector<std::vector<int>> &succ) const;
     void copyprop_pass(RunRes &R) const;
+    void keep_jumps_over_kept(RunRes &R) const;
 };
 
-const RunRes &run3_cached(Spec &sp, const std::vector<u32> &optvals);
+typedef SpecT<Sm50> Spec;
+template <> int SpecT<Sm50>::cbfold_slot(int i, const EMap &env) const;
+template <> bool SpecT<Sm50>::fmac_ok(const RunRes &R, int i, int *jout,
+                                      int *slotout) const;
+template <> u64 SpecT<Sm50>::fmac_word(const RunRes &R, int i, int j, int slot) const;
+template <> void SpecT<Sm50>::fmac_uses(const RunRes &R, int i,
+                                        std::vector<int> &out) const;
+template <> bool SpecT<Sm50>::fmac_mul_ok(int j) const;
+template <> void SpecT<Sm50>::fmac_mul_srcs(int j, int *ma, int *mb) const;
+template <> bool SpecT<Sm50>::srcbval(u64 q, const VMap &v, u32 *out) const;
+template <> void SpecT<Sm50>::lop_out(u64 q, int lop, bool ha, u32 a, bool hb, u32 b,
+                                      int d, int pd, int pop, EvalOut &out) const;
+template <> void SpecT<Sm50>::eval(int i, const VMap &v, EvalOut &out) const;
+template <> void SpecT<Sm50>::eval5(int i, const VMap &v, EvalOut &out) const;
+
+template <> int SpecT<Sm86>::cbfold_slot(int i, const EMap &env) const;
+template <> bool SpecT<Sm86>::fmac_ok(const RunRes &R, int i, int *jout,
+                                      int *slotout) const;
+template <> sm86::Word SpecT<Sm86>::fmac_word(const RunRes &R, int i, int j,
+                                              int slot) const;
+template <> void SpecT<Sm86>::fmac_uses(const RunRes &R, int i,
+                                        std::vector<int> &out) const;
+template <> bool SpecT<Sm86>::fmac_mul_ok(int j) const;
+template <> void SpecT<Sm86>::fmac_mul_srcs(int j, int *ma, int *mb) const;
+template <> bool SpecT<Sm86>::srcbval(sm86::Word q, const VMap &v, u32 *out) const;
+template <> void SpecT<Sm86>::lop_out(sm86::Word q, int lop, bool ha, u32 a, bool hb,
+                                      u32 b, int d, int pd, int pop,
+                                      EvalOut &out) const;
+template <> void SpecT<Sm86>::eval(int i, const VMap &v, EvalOut &out) const;
+template <> void SpecT<Sm86>::eval5(int i, const VMap &v, EvalOut &out) const;
+
+template <class I>
+const RunRes &run3_cached(SpecT<I> &sp, const std::vector<u32> &optvals);
+template <class I = Sm50>
 void run3_cache_clear();
 
 bool xmad_shape(u64 q, int *sela, int *selb, int *psl, int *mrg, int *cbcc);

@@ -30,12 +30,15 @@ static inline bool bv_any(const BV &a) {
 
 bool g_idfold = false;
 
-int idfold_src(const Spec &sp, const RunRes &R, int i) {
-    const Program &p = *sp.p;
-    u64 q = p.q[i];
+template <class I>
+int idfold_src(const SpecT<I> &sp, const RunRes &R, int i) {
     if (sp.norw[(size_t)i]) return -1;
 
     if (!R.fmac.empty() && R.fmac[(size_t)i] >= 0) return -1;
+    return I::float_copy_src(sp.p->q[i], R.vals[(size_t)i]);
+}
+
+int Sm50::float_copy_src(u64 q, const VMap &vals) {
     if (srcb_form(q) != FORM_REG) return -1;
     int d = (int)(q & 0xFF), ra = (int)((q >> 8) & 0xFF), rb = (int)((q >> 20) & 0xFF);
     if (d == RZ) return -1;
@@ -50,17 +53,18 @@ int idfold_src(const Spec &sp, const RunRes &R, int i) {
     if (hi == 0x5C681000u) {
         if (ra == RZ || rb == RZ) return -1;
         const u32 *v;
-        if (rb != d && (v = vmap_get(R.vals[(size_t)i], rb)) && *v == 0x3F800000u)
+        if (rb != d && (v = vmap_get(vals, rb)) && *v == 0x3F800000u)
             return ra;
-        if (ra != d && (v = vmap_get(R.vals[(size_t)i], ra)) && *v == 0x3F800000u)
+        if (ra != d && (v = vmap_get(vals, ra)) && *v == 0x3F800000u)
             return rb;
         return -1;
     }
     return -1;
 }
 
-void allocate(Spec &sp, const RunRes &R, Alloc &al) {
-    const Program &p = *sp.p;
+template <class I>
+void allocate(SpecT<I> &sp, const RunRes &R, Alloc &al) {
+    const ProgramT<I> &p = *sp.p;
     int n = p.n;
     al.kept = R.kept;
     al.K = (int)al.kept.size();
@@ -205,7 +209,6 @@ void allocate(Spec &sp, const RunRes &R, Alloc &al) {
     for (int k = 0; k < al.K; k++)
         transfer(k, al.st_in[(size_t)k], al.st_out[(size_t)k]);
 
-    al.undefined_uses = 0;
     al.max_live = 0;
     for (int k = 0; k < al.K; k++) {
         DefMap &s = al.st_out[(size_t)k];
@@ -214,7 +217,7 @@ void allocate(Spec &sp, const RunRes &R, Alloc &al) {
         for (int r : tmp) {
             auto it = s.find(r);
             int d;
-            if (it == s.end()) { d = E(r); s[r] = d; al.undefined_uses++; }
+            if (it == s.end()) { d = E(r); s[r] = d; }
             else d = it->second;
             int w = uf.find(d);
             bv_set(al.livepts[w], nw, k);
@@ -241,14 +244,13 @@ void allocate(Spec &sp, const RunRes &R, Alloc &al) {
         }
     }
 
-    const OpSets &T = S();
     for (int k = 0; k < al.K; k++) {
         int i = al.kept[(size_t)k];
         if (R.guard[(size_t)i] != TRI_T) continue;
         int nm = p.op[i];
-        u64 q = p.q[i];
-        if (nm == T.O_Mov && srcb_form(q) == FORM_REG) {
-            int d = (int)(q & 0xFF), s = (int)((q >> 20) & 0xFF);
+        typename I::Word q = p.q[i];
+        int d, s;
+        if (I::prop_copy(q, nm, &d, &s)) {
             if (d == RZ || s == RZ || d == s) continue;
             auto eit = R.env[(size_t)i].find(s);
             int32_t a = (eit != R.env[(size_t)i].end()) ? eit->second : s;
@@ -261,7 +263,7 @@ void allocate(Spec &sp, const RunRes &R, Alloc &al) {
         } else if (g_idfold && idfold_src(sp, R, i) >= 0) {
 
             int s = idfold_src(sp, R, i);
-            int d = (int)(q & 0xFF);
+            int d = I::dest_reg(q);
             auto eit = R.env[(size_t)i].find(s);
             int32_t a = (eit != R.env[(size_t)i].end()) ? eit->second : s;
             if (a < 0 || a == RZ) continue;
@@ -278,7 +280,7 @@ void allocate(Spec &sp, const RunRes &R, Alloc &al) {
             int sdv = 0, ddv = 0;
             bool have_s = false, have_d = false;
             if (is_store) {
-                int s = (int)(q & 0xFF);
+                int s = I::dest_reg(q);
                 if (s == RZ) continue;
                 auto eit = R.env[(size_t)i].find(s);
                 int32_t a = (eit != R.env[(size_t)i].end()) ? eit->second : s;
@@ -288,7 +290,7 @@ void allocate(Spec &sp, const RunRes &R, Alloc &al) {
                 if (sit != al.st_in[(size_t)k].end()) { sdv = sit->second; have_s = true; }
                 if (dit != al.st_out[(size_t)k].end()) { ddv = dit->second; have_d = true; }
             } else {
-                int d = (int)(q & 0xFF);
+                int d = I::dest_reg(q);
                 if (d == RZ) continue;
                 auto sit = al.st_in[(size_t)k].find(LMBIT + off);
                 auto dit = al.st_out[(size_t)k].find(d);
@@ -303,17 +305,10 @@ void allocate(Spec &sp, const RunRes &R, Alloc &al) {
 
     al.ndid = (int)did.size();
     for (int d = 1; d <= al.ndid; d++) al.base_root[d] = uf.find(d);
-
-    int n_spill_left = 0, wide_extra = 0;
-    for (int i : al.kept) {
-        if (p.op[i] != T.O_Stl && p.op[i] != T.O_Ldl) continue;
-        n_spill_left++;
-        if (sp.lm[(size_t)i].valid) wide_extra += sp.lm[(size_t)i].w - 1;
-    }
-    al.n_after = al.K + wide_extra;
 }
 
-void webreg(Spec &sp, Alloc &al, std::unordered_map<int, int> &wr) {
+template <class I>
+void webreg(SpecT<I> &sp, Alloc &al, std::unordered_map<int, int> &wr) {
     (void)sp;
     wr.clear();
     for (int k = 0; k < al.K; k++) {
@@ -330,7 +325,8 @@ void webreg(Spec &sp, Alloc &al, std::unordered_map<int, int> &wr) {
     }
 }
 
-static void lm_blocked(Spec &sp, Alloc &al, std::set<int> &blocked) {
+template <class I>
+static void lm_blocked(SpecT<I> &sp, Alloc &al, std::set<int> &blocked) {
     std::set<int> copy_at;
     for (const Copy &c : al.copies) if (c.kind == 1) copy_at.insert(c.i);
     for (int k = 0; k < al.K; k++) {
@@ -349,7 +345,8 @@ static void lm_blocked(Spec &sp, Alloc &al, std::set<int> &blocked) {
     }
 }
 
-static void web_values(Spec &sp, Alloc &al,
+template <class I>
+static void web_values(SpecT<I> &sp, Alloc &al,
                        std::unordered_map<int, int> &nval,
                        std::unordered_map<int, BV> &defpts) {
     size_t nw = al.words();
@@ -366,7 +363,8 @@ static void web_values(Spec &sp, Alloc &al,
     }
 }
 
-void post_coalesce(Spec &sp, const RunRes &R, Alloc &al,
+template <class I>
+void post_coalesce(SpecT<I> &sp, const RunRes &R, Alloc &al,
                    std::unordered_map<int, int> &wr,
                    std::set<int> &removed,
                    std::unordered_map<int, int> &lmparent) {
@@ -402,6 +400,8 @@ void post_coalesce(Spec &sp, const RunRes &R, Alloc &al,
     web_values(sp, al, nval, defpts);
 
     std::unordered_map<int, BV> livepts = al.livepts;
+    if (I::defs_busy())
+        for (auto &pr : defpts) bv_or(livepts[pr.first], pr.second);
     std::unordered_map<int, int> parent;
     std::unordered_map<int, int> reg = wr;
     std::unordered_map<int, std::set<int>> byreg;
@@ -538,14 +538,12 @@ void post_coalesce(Spec &sp, const RunRes &R, Alloc &al,
     (void)bv_any;
 }
 
-bool g_copyprop_nopin = false;
-
-int copy_coalesce(Spec &sp, Alloc &al, std::unordered_map<int, int> &wr,
+template <class I>
+int copy_coalesce(SpecT<I> &sp, Alloc &al, std::unordered_map<int, int> &wr,
                   std::set<int> &removed,
-                  std::unordered_map<int, int> &lmparent, CopyStats &cs,
-                  int kinds) {
-    const OpSets &T = S();
-    const Program &p = *sp.p;
+                  std::unordered_map<int, int> &lmparent, int kinds) {
+    const OpSets &T = I::sets();
+    const ProgramT<I> &p = *sp.p;
     int n_merged_here = 0;
 
     std::set<int> constrained = al.constrained;
@@ -578,6 +576,12 @@ int copy_coalesce(Spec &sp, Alloc &al, std::unordered_map<int, int> &wr,
         BV &dst = livepts[r];
         bv_or(dst, pr.second);
     }
+    if (I::defs_busy()) {
+        std::unordered_map<int, int> nval;
+        std::unordered_map<int, BV> defpts;
+        web_values(sp, al, nval, defpts);
+        for (auto &pr : defpts) bv_or(livepts[find(pr.first)], pr.second);
+    }
 
     auto gpr = [&](int w) -> int {
         auto it = wr.find(w);
@@ -598,11 +602,9 @@ int copy_coalesce(Spec &sp, Alloc &al, std::unordered_map<int, int> &wr,
     }
 
     std::vector<char> pinned_name(PREG, 0);
-    if (!g_copyprop_nopin) {
-        std::vector<int> em;
-        sp.exit_mask.bits(em);
-        for (int r : em) if (r >= 0 && r < PREG) pinned_name[(size_t)r] = 1;
-    }
+    std::vector<int> em;
+    sp.exit_mask.bits(em);
+    for (int r : em) if (r >= 0 && r < PREG) pinned_name[(size_t)r] = 1;
 
     std::vector<int> names;
     for (auto &pr : byreg) names.push_back(pr.first);
@@ -621,42 +623,39 @@ int copy_coalesce(Spec &sp, Alloc &al, std::unordered_map<int, int> &wr,
         if (is_id) {
 
             if (sp.norw[(size_t)i]) continue;
-            if (!sp.nopred[(size_t)i] && sp.pnum[(size_t)i] != PT) { cs.rej_pred++; continue; }
-            cs.id_cands++;
+            if (!sp.nopred[(size_t)i] && sp.pnum[(size_t)i] != PT) continue;
         } else if (!is_lm) {
 
             if (p.op[i] != T.O_Mov) continue;
             if (sp.norw[(size_t)i]) continue;
-            if (!sp.nopred[(size_t)i] && sp.pnum[(size_t)i] != PT) { cs.rej_pred++; continue; }
-            if (((p.q[i] >> 39) & 0xF) != 0xF) continue;
-            cs.cands++;
+            if (!sp.nopred[(size_t)i] && sp.pnum[(size_t)i] != PT) continue;
+            int md, ms;
+            if (!I::reg_move(p.q[i], p.op[i], &md, &ms)) continue;
         } else {
 
             if (!sp.lm[(size_t)i].valid || sp.lm[(size_t)i].w != 1) continue;
-            cs.lm_cands++;
         }
 
         int a = find(c.dw), b = find(c.sw);
         if (a == b) {
 
             if (!is_lm) {
-                if (is_id) cs.id_merged++; else cs.already++;
                 removed.insert(i);
             }
             continue;
         }
-        if (constrained.count(a) || constrained.count(b)) { cs.rej_constrained++; continue; }
+        if (constrained.count(a) || constrained.count(b)) continue;
         int ra = gpr(a), rb = gpr(b);
 
-        if (ra < 0 && rb < 0) { cs.rej_nogpr++; continue; }
-        if (!is_lm && (ra < 0 || rb < 0)) { cs.rej_nogpr++; continue; }
+        if (ra < 0 && rb < 0) continue;
+        if (!is_lm && (ra < 0 || rb < 0)) continue;
 
         int keep = b, drop = a;
         const BV *lkp = livepts.count(keep) ? &livepts[keep] : nullptr;
         const BV *ldp = livepts.count(drop) ? &livepts[drop] : nullptr;
         BV lk = lkp ? *lkp : BV(), ld = ldp ? *ldp : BV();
 
-        if (bv_inter(lk, ld)) { cs.rej_interfere++; continue; }
+        if (bv_inter(lk, ld)) continue;
 
         BV merged = lk;
         bv_or(merged, ld);
@@ -671,9 +670,9 @@ int copy_coalesce(Spec &sp, Alloc &al, std::unordered_map<int, int> &wr,
                 for (int r : names)
                     if (r != g && !pinned_name[(size_t)r]) want.push_back(r);
         } else if (pa && pb) {
-            if (ra != rb) { cs.rej_clash++; continue; }
+            if (ra != rb) continue;
             want.push_back(ra);
-        } else if (pa) { want.push_back(ra); cs.pin_kept++; }
+        } else if (pa) want.push_back(ra);
         else if (pb) want.push_back(rb);
         else {
             want.push_back(rb);
@@ -696,7 +695,7 @@ int copy_coalesce(Spec &sp, Alloc &al, std::unordered_map<int, int> &wr,
         };
         int rk = -1;
         for (int r : want) if (legal(r)) { rk = r; break; }
-        if (rk < 0) { cs.rej_clash++; continue; }
+        if (rk < 0) continue;
 
         parent[drop] = keep;
         livepts[keep] = merged;
@@ -706,19 +705,20 @@ int copy_coalesce(Spec &sp, Alloc &al, std::unordered_map<int, int> &wr,
         byreg[rk].insert(keep);
         wr[keep] = rk;
         n_merged_here++;
-        if (is_lm) {
-
-            cs.lm_merged++;
-        } else {
+        if (!is_lm) {
             removed.insert(i);
-            if (is_id) cs.id_merged++;
-            else cs.merged++;
         }
     }
 
     {
         std::unordered_map<int, BV> lp;
         for (auto &pr : al.livepts) bv_or(lp[find(pr.first)], pr.second);
+        if (I::defs_busy()) {
+            std::unordered_map<int, int> nval;
+            std::unordered_map<int, BV> defpts;
+            web_values(sp, al, nval, defpts);
+            for (auto &pr : defpts) bv_or(lp[find(pr.first)], pr.second);
+        }
         std::unordered_map<int, std::set<int>> perreg;
         for (auto &pr : wr) {
             int f = find(pr.first);
@@ -750,5 +750,24 @@ int copy_coalesce(Spec &sp, Alloc &al, std::unordered_map<int, int> &wr,
     for (auto &pr : parent) lmparent[pr.first] = find(pr.first);
     return n_merged_here;
 }
+
+template int idfold_src<Sm50>(const SpecT<Sm50> &, const RunRes &, int);
+template void allocate<Sm50>(SpecT<Sm50> &, const RunRes &, Alloc &);
+template void webreg<Sm50>(SpecT<Sm50> &, Alloc &, std::unordered_map<int, int> &);
+template void post_coalesce<Sm50>(SpecT<Sm50> &, const RunRes &, Alloc &,
+                                  std::unordered_map<int, int> &, std::set<int> &,
+                                  std::unordered_map<int, int> &);
+template int copy_coalesce<Sm50>(SpecT<Sm50> &, Alloc &, std::unordered_map<int, int> &,
+                                 std::set<int> &, std::unordered_map<int, int> &,
+                                 int);
+template int idfold_src<Sm86>(const SpecT<Sm86> &, const RunRes &, int);
+template void allocate<Sm86>(SpecT<Sm86> &, const RunRes &, Alloc &);
+template void webreg<Sm86>(SpecT<Sm86> &, Alloc &, std::unordered_map<int, int> &);
+template void post_coalesce<Sm86>(SpecT<Sm86> &, const RunRes &, Alloc &,
+                                  std::unordered_map<int, int> &, std::set<int> &,
+                                  std::unordered_map<int, int> &);
+template int copy_coalesce<Sm86>(SpecT<Sm86> &, Alloc &, std::unordered_map<int, int> &,
+                                 std::set<int> &, std::unordered_map<int, int> &,
+                                 int);
 
 }

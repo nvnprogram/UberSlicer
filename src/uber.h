@@ -16,7 +16,11 @@
 #include <functional>
 
 #define UBERSPEC_STAMP_MAGIC 0x50534255u
-#define UBERSPEC_CODEGEN_VER 3u
+#define UBERSPEC_CODEGEN_VER 4u
+
+#define UBERSPEC_CODEGEN_VER_NVN2 4u
+
+#include "sm86/sm86.h"
 
 namespace ub {
 
@@ -26,7 +30,7 @@ typedef uint8_t  u8;
 
 static const int INSTR_START = 0x80;
 
-#include "nvn_control.h"
+#include "sm50/nvn_control.h"
 static const int CONSTOFF_OFF =
     (int)offsetof(NVNshaderControl, mConstBufOffset);
 
@@ -78,7 +82,9 @@ enum { FORM_IMM = 0, FORM_CBUF = 1, FORM_REG = 2 };
 
 enum {
     C_SSY = 0, C_PBK, C_PCNT, C_SYNC, C_BRK, C_CONT, C_BRA, C_BRX, C_EXIT,
-    C_OTHER
+    C_OTHER,
+
+    C_CALL, C_RET
 };
 
 static const int MAX_DEPTH = 64;
@@ -304,9 +310,6 @@ inline LdcFields ldc_fields(u64 q) {
     return f;
 }
 
-enum { STRICT_IADD = 1, STRICT_SHFL = 2, STRICT_ALD = 4, STRICT_ALL = 7 };
-extern int g_strict_decode;
-
 int mem_data_regs(u64 q, int op);
 
 int gpr_src_offsets(u64 q, int op, unsigned props, int *offs);
@@ -363,52 +366,10 @@ struct RSet {
     }
 };
 
-struct Program {
-    std::vector<u8> bc, ct;
-    u32 co = 0;
-    const u8 *blob = nullptr;
-    size_t blobsz = 0;
-
-    int n = 0;
-    std::vector<int> rel;
-    std::vector<u64> q;
-    std::vector<int16_t> op;
-    std::vector<uint16_t> props;
-    std::unordered_map<int, int> idx_of;
-
-    std::vector<RSet> defs, maydefs, uses;
-
-    void load_paths(const std::string &bcp, const std::string &ctp);
-    void load_bytes(std::vector<u8> b, std::vector<u8> c);
-    void build();
-
-    const char *name(int i) const { return op_name(op[i]); }
-    int snap(int addr) const;
-    bool guarded(int i) const;
-    bool never(int i) const;
-    int target(int i) const;
-    bool blob_u32(int byte_off, u32 *out) const;
-    void du(int i, RSet &d, RSet &md, RSet &u) const;
-    static void du_word(u64 qq, int nm, unsigned pr, RSet &d, RSet &md, RSet &u);
-};
+#include "isa.h"
 
 void tex_defs(u64 q, int nm, RSet &out);
 void tex_uses(u64 q, int nm, RSet &out);
-
-struct CFGraph {
-    const Program *prog = nullptr;
-    int n = 0;
-    std::vector<int8_t> cat;
-    std::vector<int> tgt;
-    std::vector<char> grd, nev;
-    std::vector<std::vector<int>> succ;
-    std::vector<std::vector<int>> pred;
-    std::vector<char> unknown;
-    bool overflow = false;
-
-    void build(const Program &p, bool seed_orphans);
-    std::vector<char> reachable_from_entry() const;
-};
 
 struct OpSets {
     OpSet no_dest, no_pred, store_ops, widemem, texs_fam, tex_fam, tex_bases;
@@ -441,36 +402,8 @@ struct OpSets {
 };
 const OpSets &S();
 
-double perf_now();
-struct PerfCounters {
-    long long n_compose = 0;
-    long long n_compose_lm = 0, n_compose_cp = 0, n_compose_top = 0;
-    long long n_run3 = 0, n_alloc = 0, n_emitbody = 0, n_renumber = 0;
-    long long n_fill = 0;
-    long long n_run3_hit = 0, n_alloc_hit = 0;
-    long long n_emit_dup = 0, n_rn_hit = 0, n_fill_hit = 0;
-    double t_run3 = 0, t_alloc = 0, t_webreg = 0, t_postco = 0, t_copyco = 0,
-           t_emitbody = 0, t_reorder = 0, t_fill = 0, t_renumber = 0,
-           t_control = 0;
-    double x[48] = {0};
-    long long xn[48] = {0};
-    double y[16] = {0};
-    long long yn[16] = {0};
-    double t0 = perf_now();
-};
-extern PerfCounters g_perf;
-struct PerfScope {
-    double *acc; double t0;
-    explicit PerfScope(double *a) : acc(a), t0(perf_now()) {}
-    ~PerfScope() { *acc += perf_now() - t0; }
-};
-
-struct PerfSpan {
-    double *acc; double t0;
-    explicit PerfSpan(double *a) : acc(a), t0(perf_now()) {}
-    void stop() { if (acc) { *acc += perf_now() - t0; acc = nullptr; } }
-    ~PerfSpan() { stop(); }
-};
+#include "sm50/isa_sm50.h"
+#include "sm86/isa_sm86.h"
 
 }
 

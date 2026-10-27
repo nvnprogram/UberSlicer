@@ -1,6 +1,6 @@
 #pragma once
-#include "nv_attributes.h"
-#include "nv_shader_header.h"
+#include "../nv_attributes.h"
+#include "../nv_shader_header.h"
 #include <stddef.h>
 
 #include <cstdint>
@@ -80,11 +80,23 @@ struct NVNshaderControl {
     };
 
     uint32_t debugBuildId[4];
-    uint8_t  pad1[0x81];
+    uint8_t  pad1[0xc];
+    uint8_t  padding5[0x4];
+
+    uint8_t  pad2[0x1];
+    uint8_t  padding6[0x7];
+
+    uint8_t  pad3[0xb];
+    uint8_t  padding7[0x5];
+
+    uint8_t  pad4[0x21];
+    uint8_t  padding8[0x7];
+
+    uint8_t  pad5[0x31];
     uint8_t  numSamplerRefs;
-    uint8_t  pad2[0xa];
+    uint8_t  pad6[0xa];
     uint8_t  samplerUnitBindings[NVN_NUM_TEX_UNITS];
-    uint8_t  pad3[0x54];
+    uint8_t  pad7[0x54];
     uint8_t  endPadding[0x8];
 };
 

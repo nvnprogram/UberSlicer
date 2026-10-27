@@ -4,7 +4,7 @@
 #include <chrono>
 
 extern "C" {
-#include "sm50tab.h"
+#include "sm50/sm50tab.h"
 }
 
 namespace ub {
@@ -41,12 +41,6 @@ OpSet make_opset(std::initializer_list<const char *> names) {
 }
 
 static OpSets *g_sets = nullptr;
-
-PerfCounters g_perf;
-double perf_now() {
-    return (double)std::chrono::duration_cast<std::chrono::nanoseconds>(
-               std::chrono::steady_clock::now().time_since_epoch()).count() * 1e-9;
-}
 
 const OpSets &S() {
     if (g_sets) return *g_sets;
@@ -200,16 +194,8 @@ const OpSets &S() {
     return *s;
 }
 
-int g_strict_decode = 0;
-
 int mem_data_regs(u64 q, int nm) {
     if (nm < 0) return 1;
-    if (g_strict_decode & STRICT_ALD) {
-
-        const OpSets &T = S();
-        if (nm == T.O_Ald || nm == T.O_Ast || nm == T.O_Al2p)
-            return 1 + (int)((q >> 47) & 3);
-    }
     if (!S().widemem[(size_t)nm]) return 1;
     int sz = (int)((q >> 48) & 7);
     if (sz == 5) return 2;
@@ -353,8 +339,8 @@ void tex_uses(u64 q, int nm, RSet &out) {
     if (srcB < 255) out.add(srcB);
 }
 
-void Program::du_word(u64 q, int nm, unsigned props, RSet &defs, RSet &maydefs,
-                      RSet &uses) {
+void Sm50::du(u64 q, int nm, unsigned props, RSet &defs, RSet &maydefs,
+              RSet &uses) {
     const OpSets &T = S();
     defs.clear(); maydefs.clear(); uses.clear();
     if (q == 0 || nm == T.O_Nop) return;
@@ -376,17 +362,11 @@ void Program::du_word(u64 q, int nm, unsigned props, RSet &defs, RSet &maydefs,
         int m = gpr_src_offsets(q, nm, props, offs);
         for (int k = 0; k < m; k++) {
 
-            if ((g_strict_decode & STRICT_SHFL) && nm == T.O_Shfl) {
-                if (offs[k] == 20 && ((q >> 28) & 1)) continue;
-                if (offs[k] == 39 && ((q >> 29) & 1)) continue;
-            }
             addr((int)((q >> offs[k]) & 0xFF));
         }
 
-        bool skip39 = (g_strict_decode & STRICT_IADD) &&
-                      T.pred39_spurious[(size_t)nm];
-        if ((props & P_PS) && !skip39) addp((int)((q >> 39) & 7));
-        if (T.pred39_list[(size_t)nm] && !skip39) addp((int)((q >> 39) & 7));
+        if (props & P_PS) addp((int)((q >> 39) & 7));
+        if (T.pred39_list[(size_t)nm]) addp((int)((q >> 39) & 7));
         if (nm == T.O_Psetp || nm == T.O_Pset) {
             addp((int)((q >> 12) & 7));
             addp((int)((q >> 29) & 7));
@@ -433,8 +413,9 @@ void Program::du_word(u64 q, int nm, unsigned props, RSet &defs, RSet &maydefs,
     uses.unite(maydefs);
 }
 
-void Program::du(int i, RSet &d, RSet &md, RSet &u) const {
-    du_word(q[i], op[i], props[i], d, md, u);
+template <class I>
+void ProgramT<I>::du(int i, RSet &d, RSet &md, RSet &u) const {
+    I::du(q[i], op[i], props[i], d, md, u);
 }
 
 std::vector<u8> read_file(const std::string &p) {
@@ -452,38 +433,46 @@ std::vector<u8> read_file(const std::string &p) {
     return b;
 }
 
-void Program::load_paths(const std::string &bcp, const std::string &ctp) {
+template <class I>
+void ProgramT<I>::load_paths(const std::string &bcp, const std::string &ctp) {
     load_bytes(read_file(bcp), read_file(ctp));
 }
 
-void Program::load_bytes(std::vector<u8> b, std::vector<u8> c) {
+template <class I>
+void ProgramT<I>::load_bytes(std::vector<u8> b, std::vector<u8> c) {
     bc = std::move(b);
     ct = std::move(c);
     build();
 }
 
-void Program::build() {
-    if (ct.size() < CONSTOFF_OFF + 4) fail("control blob too small");
-    co = const_off(ct);
-    if (co > bc.size()) fail("ConstBufOffset %#x past bytecode (%zu)", co, bc.size());
-    blob = bc.data() + co;
-    blobsz = bc.size() - co;
-
-    rel.clear(); q.clear(); idx_of.clear();
+void Sm50::read_slots(const std::vector<u8> &bc, u32 co, std::vector<int> &rel,
+                      std::vector<u64> &q) {
     for (u32 off = INSTR_START; off + 8 <= co; off += 8) {
         if ((off - INSTR_START) % 32 == 0) continue;
         rel.push_back((int)(off - INSTR_START));
         u64 w; std::memcpy(&w, bc.data() + off, 8);
         q.push_back(w);
     }
+}
+
+template <class I>
+void ProgramT<I>::build() {
+    if (!I::ctl_ok(ct)) fail("control blob too small");
+    co = I::const_off(ct);
+    if (co > bc.size()) fail("ConstBufOffset %#x past bytecode (%zu)", co, bc.size());
+    blob = bc.data() + co;
+    blobsz = bc.size() - co;
+
+    rel.clear(); q.clear(); idx_of.clear();
+    I::read_slots(bc, co, rel, q);
     n = (int)rel.size();
     for (int i = 0; i < n; i++) idx_of[rel[i]] = i;
 
     op.resize((size_t)n);
     props.resize((size_t)n);
     for (int i = 0; i < n; i++) {
-        op[i] = (int16_t)decode_op(q[i]);
-        props[i] = (uint16_t)decode_props(q[i]);
+        op[i] = (int16_t)I::decode_op(q[i]);
+        props[i] = (uint16_t)I::decode_props(q[i]);
     }
     defs.resize((size_t)n);
     maydefs.resize((size_t)n);
@@ -491,7 +480,8 @@ void Program::build() {
     for (int i = 0; i < n; i++) du(i, defs[i], maydefs[i], uses[i]);
 }
 
-int Program::snap(int addr) const {
+template <class I>
+int ProgramT<I>::snap(int addr) const {
     auto it = idx_of.find(addr);
     if (it != idx_of.end()) return it->second;
 
@@ -503,26 +493,26 @@ int Program::snap(int addr) const {
     return lo < (size_t)n ? (int)lo : -1;
 }
 
-bool Program::guarded(int i) const {
-    if (S().no_pred[(size_t)op[i]]) return false;
-    return _predf(q[i]) != PT;
+template <class I>
+bool ProgramT<I>::guarded(int i) const {
+    if (I::sets().no_pred[(size_t)op[i]]) return false;
+    return I::guard_pred(q[i]) != PT;
 }
 
-bool Program::never(int i) const {
-    if (S().no_pred[(size_t)op[i]]) return false;
-    return _predf(q[i]) == PT && _pinv(q[i]);
+template <class I>
+bool ProgramT<I>::never(int i) const {
+    if (I::sets().no_pred[(size_t)op[i]]) return false;
+    return I::guard_pred(q[i]) == PT && I::guard_inv(q[i]);
 }
 
-int Program::target(int i) const {
-    const OpSets &T = S();
-    int nm = op[i];
-    if (!(nm == T.O_Bra || nm == T.O_Jmp || nm == T.O_Ssy || nm == T.O_Pbk ||
-          nm == T.O_Pcnt || nm == T.O_Cal))
-        return -1;
-    return snap(rel[i] + 8 + branch_imm(q[i]));
+template <class I>
+int ProgramT<I>::target(int i) const {
+    if (!I::sets().branchy_imm[(size_t)op[i]]) return -1;
+    return snap(I::branch_dest(q[i], rel[i]));
 }
 
-bool Program::blob_u32(int byte_off, u32 *out) const {
+template <class I>
+bool ProgramT<I>::blob_u32(int byte_off, u32 *out) const {
     if (byte_off < 0 || (size_t)byte_off + 4 > blobsz) return false;
     std::memcpy(out, blob + byte_off, 4);
     return true;
@@ -551,10 +541,18 @@ static inline int64_t mkent(int kind, int tgt) {
 static inline int ent_kind(int64_t e) { return (int)(e >> 32); }
 static inline int ent_tgt(int64_t e) { return (int)(int32_t)(u32)(e & 0xFFFFFFFF); }
 
-void CFGraph::build(const Program &p, bool seed_orphans) {
+template struct ProgramT<Sm50>;
+template struct ProgramT<Sm86>;
+
+void Sm50::build_cfg(const ProgramT<Sm50> &p, bool seed_orphans, CFGraph &g) {
     const OpSets &T = S();
-    prog = &p;
-    n = p.n;
+    g.n = p.n;
+    const int n = g.n;
+    std::vector<int8_t> &cat = g.cat;
+    std::vector<int> &tgt = g.tgt;
+    std::vector<char> &grd = g.grd, &nev = g.nev, &unknown = g.unknown;
+    std::vector<std::vector<int>> &succ = g.succ, &pred = g.pred;
+    bool &overflow = g.overflow;
     cat.assign((size_t)n, C_OTHER);
     tgt.assign((size_t)n, -1);
     grd.assign((size_t)n, 0);

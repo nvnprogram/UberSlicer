@@ -1,7 +1,8 @@
 
 #include <chrono>
+#include <climits>
 #include "emit.h"
-#include "nv_sched_ctl.h"
+#include "sm50/nv_sched_ctl.h"
 
 extern "C" {
 int uber_validate(unsigned char *bc, unsigned int constOff);
@@ -10,8 +11,6 @@ extern int uber_vote_floor_fail;
 }
 
 namespace ub {
-
-struct Field { int off, base, w; char kind; };
 
 void tex_src_widths(u64 q, int nm, int &nA, int &nB) {
     static const int TEXS_SRC[14][2] = {
@@ -126,6 +125,10 @@ static void fieldmap(u64 q, int nm, unsigned pr, std::vector<Field> &out) {
     }
 }
 
+void Sm50::fieldmap(Word q, int nm, unsigned pr, std::vector<Field> &out) {
+    ub::fieldmap(q, nm, pr, out);
+}
+
 u64 renumber_mask(u64 q) {
     std::vector<Field> fm;
     u64 m = 0;
@@ -142,23 +145,27 @@ static void fm_regs(const std::vector<Field> &fm, std::set<int> &s) {
             if (f.base + k < RZ) s.insert(f.base + k);
 }
 
-void words_used_regs(const std::vector<u64> &words, std::set<int> &out) {
+template <class I>
+void words_used_regs(const std::vector<typename I::Word> &words, std::set<int> &out) {
     std::vector<Field> fm;
-    for (u64 q : words) {
-        if (!q) continue;
-        fieldmap(q, decode_op(q), decode_props(q), fm);
+    for (const typename I::Word &q : words) {
+        if (I::empty(q)) continue;
+        I::fieldmap(q, I::decode_op(q), I::decode_props(q), fm);
         fm_regs(fm, out);
     }
 }
+template void words_used_regs<Sm50>(const std::vector<u64> &, std::set<int> &);
+template void words_used_regs<Sm86>(const std::vector<sm86::Word> &, std::set<int> &);
 
-static void check_fieldmap(const Program &p) {
+template <class I>
+static void check_fieldmap(const ProgramT<I> &p) {
     std::vector<Field> fm;
     for (int i = 0; i < p.n; i++) {
-        if (!p.q[i]) continue;
-        fieldmap(p.q[i], p.op[i], p.props[i], fm);
+        if (I::empty(p.q[i])) continue;
+        I::fieldmap(p.q[i], p.op[i], p.props[i], fm);
         std::set<int> got;
         fm_regs(fm, got);
-        RSet u = p.defs[i];
+        typename I::RSet u = p.defs[i];
         u.unite(p.maydefs[i]);
         u.unite(p.uses[i]);
         std::vector<int> lst; u.list(lst);
@@ -166,7 +173,7 @@ static void check_fieldmap(const Program &p) {
         for (int r : lst) if (r < RZ) want.insert(r);
         if (got != want)
             fail("field map disagrees with _du at instruction %d (%s)", i,
-                 op_name(p.op[i]));
+                 I::op_name(p.op[i]));
     }
 }
 
@@ -174,10 +181,10 @@ struct Live {
     std::vector<Mask> live, dmask, umask;
 };
 
-static void liveness(const Program &p, const CFGraph &c,
+template <class I>
+static void liveness(const ProgramT<I> &p, const CFGraph &c,
                      const std::vector<char> &reach,
                      const std::vector<int> &exit_live, Live &L) {
-    const OpSets &Te = S();
     int n = p.n;
     Mask seed;
     for (int r : exit_live) seed.set(r);
@@ -189,10 +196,10 @@ static void liveness(const Program &p, const CFGraph &c,
     for (int i : order) {
         std::vector<int> v;
         p.defs[i].list(v);
-        for (int r : v) if (r < RZ) L.dmask[(size_t)i].set(r);
-        int spur = spurious_pred(p.op[i], p.q[i]);
+        for (int r : v) if (is_gpr_key(r)) L.dmask[(size_t)i].set(r);
+        int spur = I::spurious_pred(p.op[i], p.q[i]);
         p.uses[i].list(v);
-        for (int r : v) if (r < RZ && r != spur) L.umask[(size_t)i].set(r);
+        for (int r : v) if (is_gpr_key(r) && r != spur) L.umask[(size_t)i].set(r);
     }
     std::vector<int> rorder(order.rbegin(), order.rend());
     bool conv = false;
@@ -205,7 +212,7 @@ static void liveness(const Program &p, const CFGraph &c,
             else
                 for (int t : c.succ[(size_t)i])
                     if (reach[(size_t)t]) lo |= L.live[(size_t)t];
-            if (p.op[i] == Te.O_Exit || p.op[i] == Te.O_Ret) lo |= seed;
+            if (c.cat[(size_t)i] == C_EXIT) lo |= seed;
             li = lo;
             li.andnot_or(L.dmask[(size_t)i], L.umask[(size_t)i]);
             if (li != L.live[(size_t)i]) { L.live[(size_t)i] = li; ch = true; }
@@ -215,7 +222,8 @@ static void liveness(const Program &p, const CFGraph &c,
     if (!conv) fail("liveness did not converge");
 }
 
-static void live_entry(const Program &p, const CFGraph &c,
+template <class I>
+static void live_entry(const ProgramT<I> &p, const CFGraph &c,
                        const std::vector<char> &reach, Mask &ent) {
     int n = p.n;
     std::vector<Mask> live((size_t)n), dm((size_t)n), um((size_t)n);
@@ -225,7 +233,7 @@ static void live_entry(const Program &p, const CFGraph &c,
     for (int i : order) {
         p.defs[i].list(v);
         for (int r : v) dm[(size_t)i].set(r);
-        int spur = spurious_pred(p.op[i], p.q[i]);
+        int spur = I::spurious_pred(p.op[i], p.q[i]);
         p.uses[i].list(v);
         for (int r : v) if (r != spur) um[(size_t)i].set(r);
     }
@@ -247,8 +255,9 @@ static void live_entry(const Program &p, const CFGraph &c,
 
 typedef std::unordered_map<int, std::vector<int>> Adj;
 
-static void interference(const Program &p, const std::vector<char> &reach,
-                         Live &L, Adj &adj) {
+template <class I>
+static void interference(const ProgramT<I> &p, const std::vector<char> &reach,
+                         Live &L, Adj &adj, bool defpairs = false) {
     const int NR = RZ, W = (RZ + 63) / 64;
     std::vector<u64> M((size_t)NR * W, 0);
     std::vector<char> present((size_t)NR, 0);
@@ -280,7 +289,7 @@ static void interference(const Program &p, const std::vector<char> &reach,
         for (int pass = 0; pass < 2; pass++) {
             const std::vector<int> &V = pass ? md : dd;
             for (int d : V) {
-                if (pass && d >= RZ) continue;
+                if (pass && !is_gpr_key(d)) continue;
                 present[(size_t)d] = 1;
                 ndef++;
                 u64 *row = &M[(size_t)d * W];
@@ -292,6 +301,17 @@ static void interference(const Program &p, const std::vector<char> &reach,
         if (ndef) {
             both.bits(lb);
             for (int r : lb) present[(size_t)r] = 1;
+        }
+        if (defpairs && ndef >= 2) {
+            Mask dm = L.dmask[(size_t)i];
+            for (int d : md) if (is_gpr_key(d)) dm.set(d);
+            for (int pass = 0; pass < 2; pass++)
+                for (int d : pass ? md : dd) {
+                    if (pass && !is_gpr_key(d)) continue;
+                    u64 *row = &M[(size_t)d * W];
+                    row[0] |= dm.w[0]; row[1] |= dm.w[1];
+                    row[2] |= dm.w[2]; row[3] |= dm.w[3];
+                }
         }
     }
 
@@ -326,13 +346,14 @@ static void interference(const Program &p, const std::vector<char> &reach,
     }
 }
 
-static void runs_of(const Program &p, const std::set<int> &used,
+template <class I>
+static void runs_of(const ProgramT<I> &p, const std::set<int> &used,
                     std::vector<std::vector<int>> &runs) {
     std::set<int> follows;
     std::vector<Field> fm;
     for (int i = 0; i < p.n; i++) {
-        if (!p.q[i]) continue;
-        fieldmap(p.q[i], p.op[i], p.props[i], fm);
+        if (I::empty(p.q[i])) continue;
+        I::fieldmap(p.q[i], p.op[i], p.props[i], fm);
         for (const Field &f : fm) {
             if (f.w <= 1) continue;
             if (f.base + f.w - 1 >= RZ)
@@ -365,15 +386,26 @@ extern "C" int ub_inst_class(const unsigned char *bc, unsigned int constOff,
                             int nreal, unsigned char *cls, unsigned short *rsb,
                             unsigned short *wsb, int *nslots);
 
-struct SplitMap;
-static void bank_conflicts_nodes(const Program &p, const std::vector<char> &reach,
-                                 const SplitMap &S, BConf &bc);
+int Sm50::inst_class(const std::vector<u8> &bc, u32 co, int nsl, u8 *cls) {
+    std::vector<uint16_t> rsb((size_t)nsl + 8, 0), wsb((size_t)nsl + 8, 0);
+    int got = 0;
+    if (ub_inst_class(bc.data(), co, nsl, cls, rsb.data(), wsb.data(), &got) < 0)
+        return -1;
+    return got;
+}
 
-static void bank_conflicts(const Program &p, BConf &bc) {
+template <class I> struct SplitMapT;
+typedef SplitMapT<Sm50> SplitMap;
+template <class I>
+static void bank_conflicts_nodes(const ProgramT<I> &p, const std::vector<char> &reach,
+                                 const SplitMapT<I> &S, BConf &bc);
+
+template <class I>
+static void bank_conflicts(const ProgramT<I> &p, BConf &bc) {
     std::vector<Field> fm;
     for (int i = 0; i < p.n; i++) {
-        if (!p.q[i]) continue;
-        fieldmap(p.q[i], p.op[i], p.props[i], fm);
+        if (I::empty(p.q[i])) continue;
+        I::fieldmap(p.q[i], p.op[i], p.props[i], fm);
         std::set<int> srcs;
         for (const Field &f : fm) {
             if (f.kind != 'u') continue;
@@ -387,27 +419,27 @@ static void bank_conflicts(const Program &p, BConf &bc) {
 
 struct NoFit {};
 
-bool g_rp_colour = false;
-
-bool g_rp_align = false;
-
 enum ColourOrder { ORD_DEG = 0, ORD_SMALLEST_LAST, ORD_DEG_ASC, ORD_NAME,
-                   ORD_NAME_DESC, ORD_N };
+                   ORD_NAME_DESC, ORD_DEF, ORD_N };
 
-bool g_coal = false;
-long long g_coal_pairs = 0, g_coal_hits = 0;
 typedef std::vector<std::pair<int, int>> Affinity;
 
+typedef std::vector<std::pair<int, int>> RunAlign;
+
+template <class I>
 static void colour(const std::vector<std::vector<int>> &runs, Adj &adj,
                    const std::set<int> &pinned, const BConf *bconf, int limit,
                    std::unordered_map<int, int> &cmap, int corder = ORD_DEG,
-                   const Affinity *aff = nullptr);
+                   const Affinity *aff = nullptr, const RunAlign *ral = nullptr,
+                   const std::vector<int> *rpos = nullptr);
 
+template <class I>
 static void colour(const std::vector<std::vector<int>> &runs, Adj &adj,
                    const std::set<int> &pinned, const BConf *bconf, int limit,
                    std::unordered_map<int, int> &cmap, int corder,
-                   const Affinity *aff) {
-    const int align_mod = 4;
+                   const Affinity *aff, const RunAlign *ral,
+                   const std::vector<int> *rpos) {
+    const int align_mod = I::run_align();
     cmap.clear();
 
     int maxid_ = 0;
@@ -451,12 +483,12 @@ static void colour(const std::vector<std::vector<int>> &runs, Adj &adj,
     auto cost = [&](const std::vector<int> &run, int base) {
         long long n = 0;
         for (size_t k = 0; k < run.size(); k++) {
-            int r = run[k], bank = (base + (int)k) & 3;
+            int r = run[k], bank = I::reg_bank(base + (int)k);
             auto it = bcadj.find(r);
             if (it == bcadj.end()) continue;
             for (const auto &pc : it->second) {
                 auto ct = cmap.find(pc.first);
-                if (ct != cmap.end() && (ct->second & 3) == bank) n += pc.second;
+                if (ct != cmap.end() && I::reg_bank(ct->second) == bank) n += pc.second;
             }
         }
         return n;
@@ -522,6 +554,10 @@ static void colour(const std::vector<std::vector<int>> &runs, Adj &adj,
     for (size_t i = 0; i < nr; i++) order[i] = i;
     std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
         if ((int)!pin[a] != (int)!pin[b]) return (int)!pin[a] < (int)!pin[b];
+        if (corder == ORD_DEF && rpos) {
+            if ((*rpos)[a] != (*rpos)[b]) return (*rpos)[a] < (*rpos)[b];
+            return runs[a][0] < runs[b][0];
+        }
         if (runs[a].size() != runs[b].size()) return runs[a].size() > runs[b].size();
         switch (corder) {
         case ORD_SMALLEST_LAST:
@@ -578,7 +614,6 @@ static void colour(const std::vector<std::vector<int>> &runs, Adj &adj,
                     int c = pr.first;
                     if (c < 0 || c > hi1 || !fits(run, c)) continue;
                     place(run, c);
-                    g_coal_hits++;
                     placed = true;
                     break;
                 }
@@ -587,10 +622,9 @@ static void colour(const std::vector<std::vector<int>> &runs, Adj &adj,
         }
         int step = constrained[idx] ? align_mod : 1;
         int start = constrained[idx] ? (run[0] % align_mod) : 0;
-        if (g_rp_align && constrained[idx]) {
-
-            int a = (run[0] % 4 == 0) ? 4 : ((run[0] % 2 == 0) ? 2 : 1);
-            step = a; start = 0;
+        if (ral) {
+            step = (*ral)[idx].first;
+            start = (*ral)[idx].second;
         }
         int hi = (limit < 0 ? RZ : limit) - (int)run.size();
         std::vector<int> cands;
@@ -617,11 +651,6 @@ static void colour(const std::vector<std::vector<int>> &runs, Adj &adj,
     }
 }
 
-bool g_rp_split = false;
-bool g_rp_force = false;
-
-int g_rp_offered_n = 0, g_rp_kept_n = 0, g_rp_occ_n = 0;
-
 int occupancy_of(int regs) {
     if (regs <= 0) return 64;
     int per = ((regs * 32 + 255) / 256) * 256;
@@ -629,34 +658,17 @@ int occupancy_of(int regs) {
     return w > 64 ? 64 : w;
 }
 
-extern bool g_grow;
-extern int  g_grow_k;
-int grow_limit(int lim) {
-    if (!g_grow || lim <= 0) return lim;
-    int w = occupancy_of(lim), hi = lim;
-    while (hi < 255 && occupancy_of(hi + 1) == w) hi++;
-    if (g_grow_k > 0 && hi > lim + g_grow_k) hi = lim + g_grow_k;
-    return hi;
-}
-
 static const int SPLIT_NODE0 = 4096;
 
-struct SplitMap {
-
+template <class I>
+struct SplitMapT {
     std::vector<int> fnode;
     std::set<int> nodes;
-    int nsplit = 0, nnodes = 0;
-    enum { FSTRIDE = 8 };
-    static int offix(int off) {
-        switch (off) {
-        case 0:  return 0;
-        case 8:  return 1;
-        case 20: return 2;
-        case 28: return 3;
-        case 39: return 4;
-        default: return -1;
-        }
-    }
+
+    struct TRun { int base, span, step, start, name; };
+    std::vector<TRun> truns;
+    enum { FSTRIDE = FIELD_SLOTS };
+    static int offix(int off) { return I::field_index(off); }
     void slots(int n) { fnode.assign((size_t)n * FSTRIDE, -1); }
     void set(int i, int off, int v) {
         int x = offix(off);
@@ -670,8 +682,6 @@ struct SplitMap {
         return k < fnode.size() ? fnode[k] : -1;
     }
 };
-
-bool g_rp_defrelax = false;
 
 static bool dominators(const CFGraph &c, const std::vector<char> &reach,
                        int nreal, int &W, std::vector<u64> &dom) {
@@ -702,7 +712,6 @@ static bool dominators(const CFGraph &c, const std::vector<char> &reach,
                     ch = true;
                 }
         }
-        g_perf.xn[31]++;
         if (!ch) return true;
     }
     return false;
@@ -760,31 +769,60 @@ static void cycle_nodes(const CFGraph &c, const std::vector<char> &reach,
     }
 }
 
-static bool build_split(const Program &p, const CFGraph &c,
+template <class I>
+static bool build_split(const ProgramT<I> &p, const CFGraph &c,
                         const std::vector<char> &reach, const Live &L,
-                        const std::vector<int> &exit_live, SplitMap &S,
+                        const std::vector<int> &exit_live, SplitMapT<I> &S,
                         Adj &nadj, bool want_adj = true,
                         std::vector<std::vector<int>> *innode_out = nullptr,
                         bool split_all = false,
-                        std::vector<std::vector<int>> *outnode_out = nullptr) {
-    const OpSets &T = ub::S();
+                        std::vector<std::vector<int>> *outnode_out = nullptr,
+                        int tmode = 0, const std::vector<char> *nosplit = nullptr,
+                        std::vector<int> *tconf = nullptr) {
+    const OpSets &T = I::sets();
     int n = p.n;
     std::vector<Field> fm;
 
+    const bool tsplit = (tmode & RN_SPLIT) != 0;
+    std::vector<std::pair<int, int>> tfields;
+
     std::vector<char> wide((size_t)RZ, 0), usedf((size_t)RZ, 0);
     for (int i = 0; i < n; i++) {
-        if (!p.q[i] || !reach[(size_t)i]) continue;
-        fieldmap(p.q[i], p.op[i], p.props[i], fm);
-        for (const Field &f : fm)
+        if (I::empty(p.q[i]) || !reach[(size_t)i]) continue;
+        I::fieldmap(p.q[i], p.op[i], p.props[i], fm);
+        for (const Field &f : fm) {
             for (int k = 0; k < f.w; k++) {
                 int r = f.base + k;
                 if (r >= RZ) continue;
                 usedf[(size_t)r] = 1;
                 if (f.w > 1) wide[(size_t)r] = 1;
             }
+            if (tsplit && f.w > 1 && f.base < RZ) tfields.push_back({f.base, f.w});
+        }
     }
     std::vector<char> pinset((size_t)RZ, 0);
     for (int r : exit_live) if (r >= 0 && r < RZ) pinset[(size_t)r] = 1;
+    if (nosplit)
+        for (int r = 0; r < RZ && r < (int)nosplit->size(); r++)
+            if ((*nosplit)[(size_t)r]) pinset[(size_t)r] = 1;
+    if (tsplit) {
+
+        for (bool ch = true; ch;) {
+            ch = false;
+            for (const auto &tf : tfields) {
+                bool any = false, all = true;
+                for (int k = 0; k < tf.second; k++) {
+                    bool pz = tf.first + k >= RZ || pinset[(size_t)(tf.first + k)];
+                    any |= pz;
+                    all &= pz;
+                }
+                if (!any || all) continue;
+                for (int k = 0; k < tf.second && tf.first + k < RZ; k++)
+                    pinset[(size_t)(tf.first + k)] = 1;
+                ch = true;
+            }
+        }
+    }
 
     std::vector<char> splitok((size_t)RZ, 0);
     std::vector<int> used;
@@ -792,7 +830,7 @@ static bool build_split(const Program &p, const CFGraph &c,
     for (int r = 0; r < RZ; r++) {
         if (!usedf[(size_t)r]) continue;
         used.push_back(r);
-        if (split_all || (!wide[(size_t)r] && !pinset[(size_t)r]))
+        if (split_all || ((tsplit || !wide[(size_t)r]) && !pinset[(size_t)r]))
             splitok[(size_t)r] = 1;
     }
     auto splittable = [&](int r) { return r >= 0 && r < RZ && splitok[(size_t)r]; };
@@ -839,7 +877,6 @@ static bool build_split(const Program &p, const CFGraph &c,
 
     static std::vector<int> soff, sarr;
     {
-        PerfScope ps_(&g_perf.x[40]);
         soff.assign((size_t)n + 1, 0);
         sarr.clear();
 
@@ -892,7 +929,9 @@ static bool build_split(const Program &p, const CFGraph &c,
     }
     int next = SPLIT_NODE0;
     int nsplit = 0;
-    PerfSpan uf_span(&g_perf.x[41]);
+
+    static std::vector<int> nname;
+    nname.clear();
     for (int r : used) {
         if (!splittable(r)) continue;
         const std::vector<int> &LIp = lipt[(size_t)r], &LOp = lopt[(size_t)r];
@@ -931,6 +970,7 @@ static bool build_split(const Program &p, const CFGraph &c,
                 if (repstamp[(size_t)rp] != stamp) {
                     repstamp[(size_t)rp] = stamp;
                     repnode[(size_t)rp] = next++;
+                    if (tsplit) nname.push_back(r);
                     nnode++;
                 }
                 vi[(size_t)i] = repnode[(size_t)rp];
@@ -941,6 +981,7 @@ static bool build_split(const Program &p, const CFGraph &c,
                 if (repstamp[(size_t)rp] != stamp) {
                     repstamp[(size_t)rp] = stamp;
                     repnode[(size_t)rp] = next++;
+                    if (tsplit) nname.push_back(r);
                     nnode++;
                 }
                 vo[(size_t)i] = repnode[(size_t)rp];
@@ -949,8 +990,6 @@ static bool build_split(const Program &p, const CFGraph &c,
         }
         if (nnode > 1) nsplit++;
     }
-    uf_span.stop();
-    S.nsplit = nsplit;
     if (!nsplit) return false;
 
     std::unordered_map<long long, int> deadnode;
@@ -964,6 +1003,7 @@ static bool build_split(const Program &p, const CFGraph &c,
         auto it = deadnode.find(k);
         if (it != deadnode.end()) return it->second;
         int id = next++;
+        if (tsplit) nname.push_back(r);
         deadnode[k] = id;
         return id;
     };
@@ -974,15 +1014,29 @@ static bool build_split(const Program &p, const CFGraph &c,
         return v;
     };
 
-    PerfSpan fn_span(&g_perf.x[42]);
     S.slots(n);
     std::vector<int> ndlist;
+
+    std::vector<std::pair<int, int>> tfirst, tjoin;
     for (int i = 0; i < n; i++) {
-        if (!p.q[i] || !reach[(size_t)i]) continue;
-        fieldmap(p.q[i], p.op[i], p.props[i], fm);
+        if (I::empty(p.q[i]) || !reach[(size_t)i]) continue;
+        I::fieldmap(p.q[i], p.op[i], p.props[i], fm);
         for (const Field &f : fm) {
             int nd = (f.kind == 'd') ? defnode(i, f.base) : usenode(i, f.base);
             S.set(i, f.off, nd);
+            if (tsplit && f.w > 1 && splittable(f.base)) {
+
+                tfirst.push_back({nd, f.w});
+                for (int k = 0; k < f.w; k++) {
+                    int r = f.base + k;
+                    int nk = (f.kind == 'd') ? defnode(i, r) : usenode(i, r);
+                    if (nk < SPLIT_NODE0) fail("split: tuple R%d..R%d is split in part", f.base,
+                                               f.base + f.w - 1);
+                    ndlist.push_back(nk);
+                    if (k) tjoin.push_back({nd, nk});
+                }
+                continue;
+            }
 
             for (int k = 0; k < f.w; k++) ndlist.push_back(nd + k);
         }
@@ -991,10 +1045,7 @@ static bool build_split(const Program &p, const CFGraph &c,
     std::sort(ndlist.begin(), ndlist.end());
     ndlist.erase(std::unique(ndlist.begin(), ndlist.end()), ndlist.end());
     S.nodes.insert(ndlist.begin(), ndlist.end());
-    S.nnodes = (int)S.nodes.size();
-    fn_span.stop();
     if (!want_adj) return true;
-    PerfScope pif_(&g_perf.x[43]); g_perf.xn[43]++;
 
     nadj.clear();
     {
@@ -1055,8 +1106,10 @@ static bool build_split(const Program &p, const CFGraph &c,
         L.dmask[(size_t)i].bits(dd);
         p.maydefs[i].list(md);
 
-        bool wideop = T.tex_bases[(size_t)p.op[i]] || p.op[i] == T.O_Shfl ||
-                      mem_data_regs(p.q[i], p.op[i]) > 1;
+        bool wideop = I::wide_dest(p.q[i], p.op[i]);
+
+        if (wideop && (tmode & RN_OVERLAP) && I::dest_overlap_ok(p.q[i], p.op[i]))
+            wideop = false;
         dns.clear();
         bool any_def = false, any_li_def = false;
         for (int pass = 0; pass < 2; pass++) {
@@ -1072,7 +1125,7 @@ static bool build_split(const Program &p, const CFGraph &c,
                 for (int w = 0; w < NW; w++) row[w] |= LOm[(size_t)w];
 
                 bool may = (pass == 1) || p.maydefs[i].has(d);
-                if (wideop || may || !g_rp_defrelax) {
+                if (wideop || may) {
                     for (int w = 0; w < NW; w++) row[w] |= LIm[(size_t)w];
                     any_li_def = true;
                 }
@@ -1114,14 +1167,112 @@ static bool build_split(const Program &p, const CFGraph &c,
             }
         }
     }
+    if (!tsplit || tfirst.empty()) return true;
+
+    const int NS = next - SPLIT_NODE0;
+    if ((int)nname.size() != NS) fail("split: %d split nodes, %zu names", NS, nname.size());
+    std::vector<int> tu((size_t)NS);
+    for (int x = 0; x < NS; x++) tu[(size_t)x] = x;
+    auto tfind = [&tu](int x) {
+        while (tu[(size_t)x] != x) {
+            tu[(size_t)x] = tu[(size_t)tu[(size_t)x]];
+            x = tu[(size_t)x];
+        }
+        return x;
+    };
+    std::vector<char> intup((size_t)NS, 0);
+    for (const auto &pr : tfirst) intup[(size_t)(pr.first - SPLIT_NODE0)] = 1;
+    for (const auto &pr : tjoin) {
+        int a = tfind(pr.first - SPLIT_NODE0), b = pr.second - SPLIT_NODE0;
+        intup[(size_t)b] = 1;
+        b = tfind(b);
+        if (a != b) tu[(size_t)b] = a;
+    }
+    std::vector<int> lo((size_t)NS, RZ), hi((size_t)NS, -1), al((size_t)NS, 1);
+    for (int x = 0; x < NS; x++) {
+        if (!intup[(size_t)x]) continue;
+        int r = tfind(x), nm = nname[(size_t)x];
+        lo[(size_t)r] = std::min(lo[(size_t)r], nm);
+        hi[(size_t)r] = std::max(hi[(size_t)r], nm);
+    }
+    for (const auto &pr : tfirst) {
+        int x = pr.first - SPLIT_NODE0, a = I::tuple_align(pr.second);
+        if (nname[(size_t)x] % a)
+            fail("split: tuple at R%d is not aligned for %d registers", nname[(size_t)x],
+                 pr.second);
+        int r = tfind(x);
+        al[(size_t)r] = std::max(al[(size_t)r], a);
+    }
+    std::vector<int> remap((size_t)NS, -1), cbase((size_t)NS, -1);
+    int nx = next;
+    S.truns.clear();
+    for (int x = 0; x < NS; x++) {
+        if (!intup[(size_t)x]) continue;
+        int r = tfind(x);
+        if (cbase[(size_t)r] < 0) {
+            cbase[(size_t)r] = nx;
+            int span = hi[(size_t)r] - lo[(size_t)r] + 1;
+            nx += span;
+            S.truns.push_back({cbase[(size_t)r], span, al[(size_t)r], lo[(size_t)r] % al[(size_t)r],
+                               lo[(size_t)r]});
+        }
+        remap[(size_t)x] = cbase[(size_t)r] + nname[(size_t)x] - lo[(size_t)r];
+    }
+
+    std::unordered_map<int, std::vector<int>> same;
+    for (int x = 0; x < NS; x++)
+        if (intup[(size_t)x]) same[remap[(size_t)x]].push_back(x);
+    std::set<int> bad;
+    for (const auto &kv : same) {
+        const std::vector<int> &v = kv.second;
+        for (size_t a = 0; a < v.size(); a++)
+            for (size_t b = a + 1; b < v.size(); b++) {
+                int xa = RZ + v[a], xb = RZ + v[b];
+                if (NM[(size_t)xa * NW + (xb >> 6)] & ((u64)1 << (xb & 63)))
+                    bad.insert(tfind(v[a]));
+            }
+    }
+    if (!bad.empty()) {
+        if (tconf)
+            for (int r : bad)
+                for (int nm = lo[(size_t)r]; nm <= hi[(size_t)r]; nm++) tconf->push_back(nm);
+        S.truns.clear();
+        return false;
+    }
+    auto rm = [&](int id) {
+        if (id < SPLIT_NODE0 || id >= next) return id;
+        int v = remap[(size_t)(id - SPLIT_NODE0)];
+        return v >= 0 ? v : id;
+    };
+    for (int &v : S.fnode) if (v >= 0) v = rm(v);
+    std::set<int> nn;
+    for (int id : S.nodes) nn.insert(rm(id));
+    S.nodes.swap(nn);
+    Adj na;
+    for (const auto &kv : nadj) {
+        int a = rm(kv.first);
+        std::vector<int> &row = na[a];
+        for (int b : kv.second) {
+            int b2 = rm(b);
+            if (b2 != a) row.push_back(b2);
+        }
+    }
+    for (auto &kv : na) {
+        std::sort(kv.second.begin(), kv.second.end());
+        kv.second.erase(std::unique(kv.second.begin(), kv.second.end()), kv.second.end());
+    }
+    nadj.swap(na);
     return true;
 }
 
-static void apply_split(const Program &p, const std::vector<char> &reach,
-                        const SplitMap &S,
+template <class I>
+static void apply_split(const ProgramT<I> &p, const std::vector<char> &reach,
+                        const SplitMapT<I> &S,
                         const std::unordered_map<int, int> &cmap,
-                        std::vector<u64> &words) {
-    words.assign((size_t)p.n, 0);
+                        std::vector<typename I::Word> &words) {
+    typedef typename I::Word Word;
+    typedef typename I::RSet RSet;
+    words.assign((size_t)p.n, Word());
     std::vector<Field> fm;
     auto C = [&](int nd) {
         auto it = cmap.find(nd);
@@ -1134,11 +1285,11 @@ static void apply_split(const Program &p, const std::vector<char> &reach,
         return -1;
     };
     for (int i = 0; i < p.n; i++) {
-        u64 q = p.q[i];
+        Word q = p.q[i];
         words[(size_t)i] = q;
-        if (!q || !reach[(size_t)i]) continue;
-        fieldmap(q, p.op[i], p.props[i], fm);
-        u64 nq = q;
+        if (I::empty(q) || !reach[(size_t)i]) continue;
+        I::fieldmap(q, p.op[i], p.props[i], fm);
+        Word nq = q;
         defcol.clear();
         usecol.clear();
         for (const Field &f : fm) {
@@ -1149,22 +1300,22 @@ static void apply_split(const Program &p, const std::vector<char> &reach,
             if (f.w > 1) {
 
                 for (int k = 1; k < f.w; k++) {
-                    auto it = cmap.find(f.base + k);
-                    int ck = (it == cmap.end()) ? f.base + k : it->second;
+                    auto it = cmap.find(nd + k);
+                    int ck = (it == cmap.end()) ? nd + k : it->second;
                     if (ck != nb + k) fail("split: group at %d broken", i);
                 }
             }
             for (int k = 0; k < f.w; k++)
                 (f.kind == 'd' ? defcol : usecol)
                     .push_back(std::make_pair(f.base + k, nb + k));
-            nq = (nq & ~((u64)0xFF << f.off)) | ((u64)nb << f.off);
+            I::set_field(nq, f.off, nb);
         }
         words[(size_t)i] = nq;
 
         RSet d, md, u;
-        Program::du_word(nq, p.op[i], p.props[i], d, md, u);
-        int spur_g = spurious_pred(p.op[i], nq);
-        int spur_w = spurious_pred(p.op[i], q);
+        ProgramT<I>::du_word(nq, p.op[i], p.props[i], d, md, u);
+        int spur_g = I::spurious_pred(p.op[i], nq);
+        int spur_w = I::spurious_pred(p.op[i], q);
         if (spur_g >= 0 || spur_w >= 0) {
             RSet uf2;
             std::vector<int> v; u.list(v);
@@ -1184,22 +1335,23 @@ static void apply_split(const Program &p, const std::vector<char> &reach,
                 if (col < 0) col = colget((k == 2) ? defcol : usecol, r);
                 if (col < 0)
                     fail("split: unmapped %s R%d at %d (%s)",
-                         k == 2 ? "use" : "def", r, i, op_name(p.op[i]));
+                         k == 2 ? "use" : "def", r, i, I::op_name(p.op[i]));
                 mapped.add(col);
             }
             if (!(*gots[k] == mapped))
                 fail("split: operand mismatch after renumbering at %d (%s)", i,
-                     op_name(p.op[i]));
+                     I::op_name(p.op[i]));
         }
     }
 }
 
-static void bank_conflicts_nodes(const Program &p, const std::vector<char> &reach,
-                                 const SplitMap &S, BConf &bc) {
+template <class I>
+static void bank_conflicts_nodes(const ProgramT<I> &p, const std::vector<char> &reach,
+                                 const SplitMapT<I> &S, BConf &bc) {
     std::vector<Field> fm;
     for (int i = 0; i < p.n; i++) {
-        if (!p.q[i] || !reach[(size_t)i]) continue;
-        fieldmap(p.q[i], p.op[i], p.props[i], fm);
+        if (I::empty(p.q[i]) || !reach[(size_t)i]) continue;
+        I::fieldmap(p.q[i], p.op[i], p.props[i], fm);
         std::set<int> srcs;
         for (const Field &f : fm) {
             if (f.kind != 'u') continue;
@@ -1214,44 +1366,91 @@ static void bank_conflicts_nodes(const Program &p, const std::vector<char> &reac
     }
 }
 
-static void apply_map(const Program &p, const std::unordered_map<int, int> &cmap,
-                      std::vector<u64> &words) {
-    words.assign((size_t)p.n, 0);
+template <class I>
+static void run_aligns(const ProgramT<I> &p, const std::vector<std::vector<int>> &runs,
+                       const SplitMapT<I> *S, bool bywidth, RunAlign &ral) {
+    const int ra = I::run_align();
+    ral.assign(runs.size(), std::make_pair(1, 0));
+    std::unordered_map<int, size_t> pos;
+    for (size_t ri = 0; ri < runs.size(); ri++)
+        if (runs[ri].size() > 1)
+            for (int r : runs[ri]) pos[r] = ri;
+    std::vector<int> need(runs.size(), 0);
+    if (bywidth) {
+        std::vector<Field> fm;
+        for (int i = 0; i < p.n; i++) {
+            if (I::empty(p.q[i])) continue;
+            I::fieldmap(p.q[i], p.op[i], p.props[i], fm);
+            for (const Field &f : fm) {
+                if (f.w <= 1 || f.base >= RZ) continue;
+                auto it = pos.find(f.base);
+                if (it == pos.end()) continue;
+                int a = I::tuple_align(f.w);
+                if (f.base % a)
+                    fail("tuple at R%d is not aligned for %d registers", f.base, f.w);
+                need[it->second] = std::max(need[it->second], a);
+            }
+        }
+    }
+    std::unordered_map<int, const typename SplitMapT<I>::TRun *> tr;
+    if (S)
+        for (const auto &t : S->truns) tr[t.base] = &t;
+    for (size_t ri = 0; ri < runs.size(); ri++) {
+        const std::vector<int> &run = runs[ri];
+        if (run.size() <= 1) continue;
+        auto t = tr.find(run[0]);
+        if (t != tr.end()) {
+            ral[ri] = bywidth ? std::make_pair(t->second->step, t->second->start)
+                              : std::make_pair(ra, t->second->name % ra);
+            continue;
+        }
+        int m = (bywidth && need[ri]) ? need[ri] : ra;
+        ral[ri] = std::make_pair(m, run[0] % m);
+    }
+}
+
+template <class I>
+static void apply_map(const ProgramT<I> &p, const std::unordered_map<int, int> &cmap,
+                      std::vector<typename I::Word> &words) {
+    typedef typename I::Word Word;
+    words.assign((size_t)p.n, Word());
     std::vector<Field> fm;
     auto M = [&](int r) {
         auto it = cmap.find(r);
         return it == cmap.end() ? r : it->second;
     };
     for (int i = 0; i < p.n; i++) {
-        u64 q = p.q[i];
-        if (!q) { words[(size_t)i] = q; continue; }
-        fieldmap(q, p.op[i], p.props[i], fm);
-        u64 nq = q;
+        Word q = p.q[i];
+        if (I::empty(q)) { words[(size_t)i] = q; continue; }
+        I::fieldmap(q, p.op[i], p.props[i], fm);
+        Word nq = q;
         for (const Field &f : fm) {
             int nb = M(f.base);
             for (int k = 0; k < f.w; k++)
                 if (M(f.base + k) != nb + k)
-                    fail("group at %d (%s) broken", i, op_name(p.op[i]));
-            nq = (nq & ~((u64)0xFF << f.off)) | ((u64)nb << f.off);
+                    fail("group at %d (%s) broken", i, I::op_name(p.op[i]));
+            I::set_field(nq, f.off, nb);
         }
         words[(size_t)i] = nq;
     }
 }
 
-static void gate_operands(const Program &p, const std::vector<u64> &words,
+template <class I>
+static void gate_operands(const ProgramT<I> &p, const std::vector<typename I::Word> &words,
                           const std::unordered_map<int, int> &cmap) {
+    typedef typename I::RSet RSet;
     auto M = [&](int r) {
         if (r >= RZ) return r;
         auto it = cmap.find(r);
         return it == cmap.end() ? r : it->second;
     };
     for (int i = 0; i < p.n; i++) {
-        if (!p.q[i]) continue;
+        if (I::empty(p.q[i])) continue;
         RSet d, md, u;
-        Program::du_word(words[(size_t)i], p.op[i], p.props[i], d, md, u);
+        ProgramT<I>::du_word(words[(size_t)i], p.op[i], p.props[i], d, md, u);
 
-        int spur_g = spurious_pred(p.op[i], words[(size_t)i]);
-        int spur_w = spurious_pred(p.op[i], p.q[i]);
+        int spur_g = I::spurious_pred(p.op[i], words[(size_t)i]);
+        int spur_w = I::spurious_pred(p.op[i], p.q[i]);
         RSet uf;
         if (spur_g >= 0 || spur_w >= 0) {
             std::vector<int> v; u.list(v);
@@ -1269,40 +1468,14 @@ static void gate_operands(const Program &p, const std::vector<u64> &words,
             }
             if (!(*gots[k] == mapped))
                 fail("operand mismatch after renumbering at %d (%s)", i,
-                     op_name(p.op[i]));
+                     I::op_name(p.op[i]));
         }
     }
-}
-
-static int maxgpr(const Program &p) {
-    int mx = -1;
-    for (int i = 0; i < p.n; i++) {
-        if (!p.q[i]) continue;
-        const RSet *s[3] = {&p.defs[i], &p.maydefs[i], &p.uses[i]};
-        for (int k = 0; k < 3; k++) {
-            std::vector<int> v; s[k]->list(v);
-            for (int r : v) if (r < RZ && r > mx) mx = r;
-        }
-    }
-    return mx;
 }
 
 bool g_bank = false;
-bool g_bank_force = true;
 
-bool g_anti = false;
-bool g_anti_force = true;
-
-bool g_grow = false;
-bool g_grow_bank = false;
-
-int  g_grow_k = 0;
-long long g_grow_room = 0, g_grow_calls = 0;
-long long g_anti_rows = 0, g_anti_kept = 0, g_anti_before = 0, g_anti_after = 0;
-long long g_anti_cyc_saved = 0, g_anti_calls = 0;
-long long g_bank_rows = 0, g_bank_kept = 0, g_bank_before = 0, g_bank_after = 0;
-long long g_bank_us = 0, g_bank_emit_us = 0, g_bank_calls = 0;
-
+template <class I>
 static long long bank_cost_of(const BConf &bconf,
                               const std::unordered_map<int, int> &cmap) {
     long long n = 0;
@@ -1312,17 +1485,19 @@ static long long bank_cost_of(const BConf &bconf,
         if (a == cmap.end() || b == cmap.end()) continue;
 
         if (a->second == b->second) continue;
-        if ((a->second & 3) == (b->second & 3)) n += pr.second;
+        if (I::reg_bank(a->second) == I::reg_bank(b->second)) n += pr.second;
     }
     return n;
 }
 
+template <class I>
 static long long bank_repair(const std::vector<std::vector<int>> &runs,
                              const Adj &adj, const std::set<int> &pinned,
                              const BConf &bconf, int limit,
-                             std::unordered_map<int, int> &cmap) {
+                             std::unordered_map<int, int> &cmap,
+                             const RunAlign *ral = nullptr) {
     if (bconf.empty() || cmap.empty()) return 0;
-    long long before = bank_cost_of(bconf, cmap);
+    long long before = bank_cost_of<I>(bconf, cmap);
     if (!before) return 0;
 
     int maxid_ = 0;
@@ -1385,7 +1560,7 @@ static long long bank_repair(const std::vector<std::vector<int>> &runs,
                 int cp = colof(pw.first);
                 if (cp < 0) continue;
                 if (cp == c) continue;
-                if ((cp & 3) == (c & 3)) n += pw.second;
+                if (I::reg_bank(cp) == I::reg_bank(c)) n += pw.second;
             }
         }
         return n;
@@ -1447,7 +1622,7 @@ static long long bank_repair(const std::vector<std::vector<int>> &runs,
                     int cp = colof(pw.first);
                     if (cp < 0) continue;
                     if (cp == cu) continue;
-                    if ((cp & 3) != (cu & 3)) continue;
+                    if (I::reg_bank(cp) != I::reg_bank(cu)) continue;
                     n += pw.second;
                 }
             }
@@ -1464,7 +1639,7 @@ static long long bank_repair(const std::vector<std::vector<int>> &runs,
             for (const auto &pw : it->second) {
                 int cp = colof(pw.first);
                 if (cp < 0 || cp == cu) continue;
-                if ((cp & 3) == (cu & 3)) n += pw.second;
+                if (I::reg_bank(cp) == I::reg_bank(cu)) n += pw.second;
             }
         }
         return n;
@@ -1488,7 +1663,7 @@ static long long bank_repair(const std::vector<std::vector<int>> &runs,
                 if (!colour_cost(c1)) continue;
                 for (int c2 = c1 + 1; c2 < limit && budget > 0; c2++) {
                     if (colfixed[(size_t)c2]) continue;
-                    if (((c1 ^ c2) & 3) == 0) continue;
+                    if (I::reg_bank(c1) == I::reg_bank(c2)) continue;
                     budget--;
                     long long b2 = local_cost(c1, c2);
                     swap_classes(c1, c2);
@@ -1510,8 +1685,9 @@ static long long bank_repair(const std::vector<std::vector<int>> &runs,
                 long long c0 = cost_at(run, cur);
                 if (!c0) continue;
 
-                int step = run.size() > 1 ? 4 : 1;
-                int start = run.size() > 1 ? (run[0] % 4) : 0;
+                int step = run.size() > 1 ? I::run_align() : 1;
+                int start = run.size() > 1 ? (run[0] % I::run_align()) : 0;
+                if (ral) { step = (*ral)[i].first; start = (*ral)[i].second; }
                 int hi = limit - (int)run.size();
                 int best = cur;
                 long long bestc = c0;
@@ -1546,7 +1722,7 @@ static long long bank_repair(const std::vector<std::vector<int>> &runs,
         }
         if (!any) break;
     }
-    long long after = bank_cost_of(bconf, cmap);
+    long long after = bank_cost_of<I>(bconf, cmap);
     return before - after;
 }
 
@@ -1573,7 +1749,8 @@ static long long anti_cost_of(const AntiModel &A,
     return n;
 }
 
-static void build_anti(const Program &p, const std::vector<char> &reach,
+template <class I>
+static void build_anti(const ProgramT<I> &p, const std::vector<char> &reach,
                        const std::vector<u8> &cls,
                        const std::vector<char> &leader,
                        const std::function<int(int, int)> &nodeof,
@@ -1584,8 +1761,8 @@ static void build_anti(const Program &p, const std::vector<char> &reach,
     std::vector<std::vector<int>> rd((size_t)n), wr((size_t)n);
     std::vector<int> nsrc((size_t)n, 0);
     for (int i = 0; i < n; i++) {
-        if (!p.q[i] || !reach[(size_t)i]) continue;
-        fieldmap(p.q[i], p.op[i], p.props[i], fm);
+        if (I::empty(p.q[i]) || !reach[(size_t)i]) continue;
+        I::fieldmap(p.q[i], p.op[i], p.props[i], fm);
         for (const Field &f : fm) {
             if (f.base >= RZ) continue;
             int nd = nodeof(i, f.off);
@@ -1595,7 +1772,7 @@ static void build_anti(const Program &p, const std::vector<char> &reach,
         }
     }
     for (int i = 0; i < n; i++) {
-        if (!p.q[i] || !reach[(size_t)i]) continue;
+        if (I::empty(p.q[i]) || !reach[(size_t)i]) continue;
 
         if (!(cls[(size_t)i] & 1)) continue;
         if (!(cls[(size_t)i] & 6)) continue;
@@ -1603,7 +1780,7 @@ static void build_anti(const Program &p, const std::vector<char> &reach,
         int w = 5 + (nsrc[(size_t)i] >> 1);
         for (int j = i + 1; j < n && j - i <= WINDOW; j++) {
             if (leader[(size_t)j]) break;
-            if (!p.q[j] || !reach[(size_t)j]) continue;
+            if (I::empty(p.q[j]) || !reach[(size_t)j]) continue;
             for (int v : wr[(size_t)j]) {
                 for (int u : rd[(size_t)i]) A.add(u, v, w);
                 for (int u : wr[(size_t)i]) A.add(u, v, 5);
@@ -1612,10 +1789,12 @@ static void build_anti(const Program &p, const std::vector<char> &reach,
     }
 }
 
+template <class I>
 static long long anti_repair(const std::vector<std::vector<int>> &runs,
                              const Adj &adj, const std::set<int> &pinned,
                              const AntiModel &A, int limit,
-                             std::unordered_map<int, int> &cmap) {
+                             std::unordered_map<int, int> &cmap,
+                             const RunAlign *ral = nullptr) {
     if (A.w.empty() || cmap.empty()) return 0;
     long long before = anti_cost_of(A, cmap);
     if (!before) return 0;
@@ -1711,8 +1890,9 @@ static long long anti_repair(const std::vector<std::vector<int>> &runs,
             int cur = cmap.at(run[0]);
             long long c0 = cost_at(run, cur);
             if (!c0) continue;
-            int step = run.size() > 1 ? 4 : 1;
-            int start = run.size() > 1 ? (run[0] % 4) : 0;
+            int step = run.size() > 1 ? I::run_align() : 1;
+            int start = run.size() > 1 ? (run[0] % I::run_align()) : 0;
+            if (ral) { step = (*ral)[i].first; start = (*ral)[i].second; }
             int hi = limit - (int)run.size();
             int best = cur;
             long long bestc = c0;
@@ -1742,19 +1922,19 @@ static long long anti_repair(const std::vector<std::vector<int>> &runs,
     return before - anti_cost_of(A, cmap);
 }
 
+template <class I>
 bool web_map(const std::vector<u8> &bc_in, const std::vector<u8> &ct_in,
              bool fragment, std::vector<int> &wuse, std::vector<int> &wdef,
              int &nslots) {
-    const OpSets &T = ub::S();
-    Program p;
+    const OpSets &T = I::sets();
+    ProgramT<I> p;
     p.load_bytes(bc_in, ct_in);
     CFGraph c;
     std::vector<char> reach;
-    { PerfScope ps_(&g_perf.x[1]);
-      c.build(p, false);
-      reach = c.reachable_from_entry(); }
+    c.build(p, false);
+    reach = c.reachable_from_entry();
     std::vector<int> exit_live;
-    if (fragment) exit_live_regs(bc_in, exit_live);
+    if (fragment) I::exit_live_regs(bc_in, exit_live);
     Live L;
     liveness(p, c, reach, exit_live, L);
 
@@ -1766,8 +1946,8 @@ bool web_map(const std::vector<u8> &bc_in, const std::vector<u8> &ct_in,
     std::vector<Field> fm;
     std::set<int> wide, used;
     for (int i = 0; i < n; i++) {
-        if (!p.q[i] || !reach[(size_t)i]) continue;
-        fieldmap(p.q[i], p.op[i], p.props[i], fm);
+        if (I::empty(p.q[i]) || !reach[(size_t)i]) continue;
+        I::fieldmap(p.q[i], p.op[i], p.props[i], fm);
         fm_regs(fm, used);
         for (const Field &f : fm)
             if (f.w > 1)
@@ -1867,8 +2047,8 @@ bool web_map(const std::vector<u8> &bc_in, const std::vector<u8> &ct_in,
     };
 
     for (int i = 0; i < n; i++) {
-        if (!p.q[i] || !reach[(size_t)i]) continue;
-        fieldmap(p.q[i], p.op[i], p.props[i], fm);
+        if (I::empty(p.q[i]) || !reach[(size_t)i]) continue;
+        I::fieldmap(p.q[i], p.op[i], p.props[i], fm);
         for (const Field &f : fm) {
             for (int k = 0; k < f.w; k++) {
                 int r = f.base + k;
@@ -1891,43 +2071,130 @@ bool web_map(const std::vector<u8> &bc_in, const std::vector<u8> &ct_in,
     }
     return true;
 }
+template bool web_map<Sm50>(const std::vector<u8> &, const std::vector<u8> &, bool,
+                            std::vector<int> &, std::vector<int> &, int &);
+template bool web_map<Sm86>(const std::vector<u8> &, const std::vector<u8> &, bool,
+                            std::vector<int> &, std::vector<int> &, int &);
 
-static const int RN_NCTR = 18;
-static_assert(TAIL_NCTR == RN_NCTR + 16, "tail_counters is RN_NCTR plus sixteen");
-static void rn_counters(long long *v) {
-    long long src[RN_NCTR] = {
-        g_rp_offered_n, g_rp_kept_n, g_rp_occ_n,
-        g_bank_rows, g_bank_kept, g_bank_before, g_bank_after,
-        g_bank_us, g_bank_emit_us, g_bank_calls,
-        g_anti_rows, g_anti_kept, g_anti_before, g_anti_after,
-        g_anti_cyc_saved, g_anti_calls, g_grow_room, g_grow_calls};
-    for (int i = 0; i < RN_NCTR; i++) v[i] = src[i];
-}
-static void rn_counters_add(const long long *d) {
-    long long *dst[RN_NCTR] = {
-        nullptr, nullptr, nullptr,
-        &g_bank_rows, &g_bank_kept, &g_bank_before, &g_bank_after,
-        &g_bank_us, &g_bank_emit_us, &g_bank_calls,
-        &g_anti_rows, &g_anti_kept, &g_anti_before, &g_anti_after,
-        &g_anti_cyc_saved, &g_anti_calls, &g_grow_room, &g_grow_calls};
-    g_rp_offered_n += (int)d[0];
-    g_rp_kept_n    += (int)d[1];
-    g_rp_occ_n     += (int)d[2];
-    for (int i = 3; i < RN_NCTR; i++) *dst[i] += d[i];
+template <class I>
+static void rename_check(const ProgramT<I> &p, const CFGraph &c, const std::vector<char> &reach,
+                         const std::vector<int> &exit_live,
+                         const std::vector<typename I::Word> &nw) {
+    const int n = p.n;
+    std::vector<Field> fa, fb;
+    std::vector<int> dfirst((size_t)n + 1, 0), regA, regB;
+    std::vector<char> dmay;
+    std::vector<std::vector<int>> defsA((size_t)RZ), defsB((size_t)RZ);
+    for (int i = 0; i < n; i++) {
+        dfirst[(size_t)i] = (int)regA.size();
+        if (I::empty(p.q[i]) || !reach[(size_t)i]) continue;
+        I::fieldmap(p.q[i], p.op[i], p.props[i], fa);
+        I::fieldmap(nw[(size_t)i], I::decode_op(nw[(size_t)i]), I::decode_props(nw[(size_t)i]), fb);
+        if (fa.size() != fb.size()) fail("rename check: operands differ at %d", i);
+        for (size_t f = 0; f < fa.size(); f++) {
+            if (fa[f].kind != fb[f].kind || fa[f].w != fb[f].w || fa[f].off != fb[f].off)
+                fail("rename check: operand %zu differs at %d", f, i);
+            if (fa[f].kind != 'd') continue;
+            for (int k = 0; k < fa[f].w; k++) {
+                int ra = fa[f].base + k, rb = fb[f].base + k;
+                if ((ra >= RZ) != (rb >= RZ)) fail("rename check: R%d at %d is now R%d", ra, i, rb);
+                if (ra >= RZ) continue;
+                int id = (int)regA.size();
+                regA.push_back(ra);
+                regB.push_back(rb);
+                dmay.push_back(p.maydefs[i].has(ra) ? 1 : 0);
+                defsA[(size_t)ra].push_back(id);
+                defsB[(size_t)rb].push_back(id);
+            }
+        }
+    }
+    dfirst[(size_t)n] = (int)regA.size();
+    const int ND = (int)regA.size(), NB = ND + RZ;
+    const int W = (NB + 63) / 64;
+    auto solve = [&](const std::vector<int> &reg, const std::vector<std::vector<int>> &defs,
+                     std::vector<u64> &in) {
+        in.assign((size_t)n * W, 0);
+        std::vector<u64> out((size_t)n * W, 0), t((size_t)W);
+        for (bool ch = true; ch;) {
+            ch = false;
+            for (int i = 0; i < n; i++) {
+                if (!reach[(size_t)i]) continue;
+                std::fill(t.begin(), t.end(), 0);
+                if (i == 0)
+                    for (int r = 0; r < RZ; r++)
+                        t[(size_t)((ND + r) >> 6)] |= (u64)1 << ((ND + r) & 63);
+                for (int q : c.pred[(size_t)i])
+                    if (reach[(size_t)q])
+                        for (int w = 0; w < W; w++) t[(size_t)w] |= out[(size_t)q * W + w];
+                u64 *iw = &in[(size_t)i * W];
+                for (int w = 0; w < W; w++) iw[w] = t[(size_t)w];
+                for (int d = dfirst[(size_t)i]; d < dfirst[(size_t)i + 1]; d++) {
+                    if (dmay[(size_t)d]) continue;
+                    int r = reg[(size_t)d];
+                    for (int o : defs[(size_t)r]) t[(size_t)(o >> 6)] &= ~((u64)1 << (o & 63));
+                    t[(size_t)((ND + r) >> 6)] &= ~((u64)1 << ((ND + r) & 63));
+                }
+                for (int d = dfirst[(size_t)i]; d < dfirst[(size_t)i + 1]; d++)
+                    t[(size_t)(d >> 6)] |= (u64)1 << (d & 63);
+                u64 *ow = &out[(size_t)i * W];
+                for (int w = 0; w < W; w++)
+                    if (ow[w] != t[(size_t)w]) { ow[w] = t[(size_t)w]; ch = true; }
+            }
+        }
+    };
+    std::vector<u64> inA, inB;
+    solve(regA, defsA, inA);
+    solve(regB, defsB, inB);
+    std::vector<int> sa, sb;
+    auto reached = [&](const std::vector<u64> &in, const std::vector<std::vector<int>> &defs,
+                       int i, int r, std::vector<int> &s) {
+        s.clear();
+        const u64 *iw = &in[(size_t)i * W];
+        for (int d : defs[(size_t)r]) if (iw[d >> 6] & ((u64)1 << (d & 63))) s.push_back(d);
+        if (iw[(ND + r) >> 6] & ((u64)1 << ((ND + r) & 63))) s.push_back(-1);
+        std::sort(s.begin(), s.end());
+    };
+    auto same = [&](int i, int ra, int rb) {
+        reached(inA, defsA, i, ra, sa);
+        reached(inB, defsB, i, rb, sb);
+        if (sa != sb)
+            fail("rename check: R%d at %d (%s, now R%d) is reached by other writes", ra, i,
+                 I::op_name(p.op[i]), rb);
+    };
+    for (int i = 0; i < n; i++) {
+        if (I::empty(p.q[i]) || !reach[(size_t)i]) continue;
+        I::fieldmap(p.q[i], p.op[i], p.props[i], fa);
+        I::fieldmap(nw[(size_t)i], I::decode_op(nw[(size_t)i]), I::decode_props(nw[(size_t)i]), fb);
+        for (size_t f = 0; f < fa.size(); f++)
+            for (int k = 0; k < fa[f].w; k++) {
+                int ra = fa[f].base + k, rb = fb[f].base + k;
+                if ((ra >= RZ) != (rb >= RZ)) fail("rename check: R%d at %d is now R%d", ra, i, rb);
+                if (ra >= RZ) continue;
+
+                if (fa[f].kind == 'd' && !p.maydefs[i].has(ra)) continue;
+                same(i, ra, rb);
+            }
+
+        if (c.succ[(size_t)i].empty() || c.cat[(size_t)i] == C_EXIT)
+            for (int r : exit_live) same(i, r, r);
+    }
 }
 
 struct RnEntry {
     std::vector<u8> bc, ct;
     RegStats st;
-    long long d[RN_NCTR];
 };
-static std::map<std::string, RnEntry> g_rn_cache;
-void renumber_cache_clear() { g_rn_cache.clear(); }
+template <class I> static std::map<std::string, RnEntry> g_rn_cache;
+template <class I> void renumber_cache_clear() { g_rn_cache<I>.clear(); }
+template void renumber_cache_clear<Sm50>();
+template void renumber_cache_clear<Sm86>();
 
+template <class I>
 static void renumber_uncached(std::vector<u8> &bc, std::vector<u8> &ct,
                               bool fragment, bool bank_aware, RegStats &st,
                               int need_warps);
 
+template <class I>
 void renumber(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
               bool bank_aware, RegStats &st, int need_warps) {
     std::string key;
@@ -1936,110 +2203,96 @@ void renumber(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
     key.push_back(bank_aware ? 'B' : 'b');
     key.append((const char *)bc.data(), bc.size());
     key.append((const char *)ct.data(), ct.size());
-    auto it = g_rn_cache.find(key);
-    if (it != g_rn_cache.end()) {
+    auto it = g_rn_cache<I>.find(key);
+    if (it != g_rn_cache<I>.end()) {
         bc = it->second.bc;
         ct = it->second.ct;
         st = it->second.st;
-        rn_counters_add(it->second.d);
-        g_perf.n_rn_hit++;
         return;
     }
-    long long c0[RN_NCTR];
-    rn_counters(c0);
-    renumber_uncached(bc, ct, fragment, bank_aware, st, need_warps);
+    renumber_uncached<I>(bc, ct, fragment, bank_aware, st, need_warps);
 
     if (st.floored) return;
     RnEntry e;
     e.bc = bc;
     e.ct = ct;
     e.st = st;
-    long long c1[RN_NCTR];
-    rn_counters(c1);
-    for (int i = 0; i < RN_NCTR; i++) e.d[i] = c1[i] - c0[i];
-    g_rn_cache.emplace(std::move(key), std::move(e));
+    g_rn_cache<I>.emplace(std::move(key), std::move(e));
 }
 
+template <class I>
 static void renumber_uncached_i(std::vector<u8> &bc, std::vector<u8> &ct,
                               bool fragment, bool bank_aware, RegStats &st,
                               int need_warps);
+template <class I>
 static void renumber_uncached(std::vector<u8> &bc, std::vector<u8> &ct,
                               bool fragment, bool bank_aware, RegStats &st,
                               int need_warps) {
-    PerfScope ps_(&g_perf.x[28]);
-    renumber_uncached_i(bc, ct, fragment, bank_aware, st, need_warps);
+    renumber_uncached_i<I>(bc, ct, fragment, bank_aware, st, need_warps);
 }
+template <class I>
 static void renumber_uncached_i(std::vector<u8> &bc, std::vector<u8> &ct,
                               bool fragment, bool bank_aware, RegStats &st,
                               int need_warps) {
-    Program p;
-    { PerfScope ps_(&g_perf.x[0]); p.load_bytes(bc, ct); }
+    ProgramT<I> p;
+    p.load_bytes(bc, ct);
     u32 co = p.co;
+    const int tmode = I::renumber_mode();
 
     std::vector<u8> g_icls;
     std::vector<char> g_bbleader;
-    if (g_anti) {
-        int nsl = 3 * ((int)co - INSTR_START) / 32;
-        if (nsl < 0) nsl = 0;
-        g_icls.assign((size_t)nsl + 8, 0);
-        std::vector<uint16_t> rsb((size_t)nsl + 8, 0), wsb((size_t)nsl + 8, 0);
-        int got = 0;
-        PerfScope ps_(&g_perf.x[14]); g_perf.xn[14]++;
-        if (ub_inst_class(bc.data(), co, nsl, g_icls.data(), rsb.data(),
-                          wsb.data(), &got) < 0 || got != nsl)
-            fail("renumber: ub_inst_class returned %d for %d slots", got, nsl);
-    }
+    int nsl = I::nslots(co);
+    if (nsl < 0) nsl = 0;
+    g_icls.assign((size_t)nsl + 8, 0);
+    int got = I::inst_class(bc, co, nsl, g_icls.data());
+    if (got != nsl)
+        fail("renumber: instruction classes returned %d for %d slots", got, nsl);
 
-    { PerfScope ps_(&g_perf.x[15]); check_fieldmap(p); }
+    check_fieldmap(p);
 
     CFGraph c;
     std::vector<char> reach;
-    { PerfScope ps_(&g_perf.x[16]);
-      c.build(p, false);
-      reach = c.reachable_from_entry(); }
+    c.build(p, false);
+    reach = c.reachable_from_entry();
 
     std::vector<int> exit_live;
-    if (fragment) exit_live_regs(bc, exit_live);
+    if (fragment) I::exit_live_regs(bc, exit_live);
 
     Live L;
-    { PerfScope ps_(&g_perf.x[2]); liveness(p, c, reach, exit_live, L); }
+    liveness(p, c, reach, exit_live, L);
 
     int old_maxlive = 0;
     for (int i = 0; i < p.n; i++)
         if (reach[(size_t)i])
             old_maxlive = std::max(old_maxlive, L.live[(size_t)i].popcount());
-    if (need_warps > 0 && occupancy_of(old_maxlive) < need_warps) {
+    if (need_warps > 0 && I::occupancy_of(old_maxlive) < need_warps) {
         st.floored = 1;
-        st.maxlive = old_maxlive;
         return;
     }
 
     Adj adj;
-    { PerfScope ps_(&g_perf.x[3]); interference(p, reach, L, adj); }
+    interference(p, reach, L, adj, (tmode & RN_DEFS) != 0);
 
-    if (g_anti) {
-        g_bbleader.assign((size_t)p.n + 8, 0);
-        if (p.n) g_bbleader[0] = 1;
-        for (int i = 0; i < p.n; i++) {
-            if (!p.q[i]) continue;
-            bool falls = false;
-            for (int t : c.succ[(size_t)i]) {
-                if (t == i + 1) falls = true;
-                else if (t >= 0 && t < p.n) g_bbleader[(size_t)t] = 1;
-            }
-            if ((!falls || c.succ[(size_t)i].size() > 1) && i + 1 < p.n)
-                g_bbleader[(size_t)i + 1] = 1;
+    g_bbleader.assign((size_t)p.n + 8, 0);
+    if (p.n) g_bbleader[0] = 1;
+    for (int i = 0; i < p.n; i++) {
+        if (I::empty(p.q[i])) continue;
+        bool falls = false;
+        for (int t : c.succ[(size_t)i]) {
+            if (t == i + 1) falls = true;
+            else if (t >= 0 && t < p.n) g_bbleader[(size_t)t] = 1;
         }
+        if ((!falls || c.succ[(size_t)i].size() > 1) && i + 1 < p.n)
+            g_bbleader[(size_t)i + 1] = 1;
     }
 
     std::set<int> used;
     std::vector<Field> fm;
-    { PerfScope ps_(&g_perf.x[19]);
     for (int i = 0; i < p.n; i++) {
-        if (!p.q[i]) continue;
-        fieldmap(p.q[i], p.op[i], p.props[i], fm);
+        if (I::empty(p.q[i])) continue;
+        I::fieldmap(p.q[i], p.op[i], p.props[i], fm);
         fm_regs(fm, used);
-    } }
+    }
     for (int r : used) adj[r];
 
     {
@@ -2069,103 +2322,124 @@ static void renumber_uncached_i(std::vector<u8> &bc, std::vector<u8> &ct,
     };
 
     struct Cand {
-        std::vector<u64> words;
+        std::vector<typename I::Word> words;
         u32 decl = 0;
-        int nruns = 0, nconstrained = 0, bank = 0, maxcol = -1;
+        int maxcol = -1;
         std::vector<u8> bc, ct;
         int cycles = 0, warps = 0;
-        long long bankcost = 0;
-        long long anticost = 0;
         std::unordered_map<int, int> cmap;
         bool have = false;
     };
-    auto build = [&](bool usesplit, const SplitMap &S, std::set<int> &nodes,
+    auto build = [&](bool usesplit, const SplitMapT<I> &S, std::set<int> &nodes,
                      Adj &cadj, Cand &out) {
         std::set<int> pin2;
         for (int r : exit_live) if (nodes.count(r)) pin2.insert(r);
         std::vector<std::vector<int>> runs;
-        { PerfScope ps_(&g_perf.x[21]); g_perf.xn[21]++; runs_of(p, nodes, runs); }
+        if (usesplit && !S.truns.empty()) {
+
+            std::set<int> rest = nodes;
+            for (const auto &t : S.truns)
+                for (int k = 0; k < t.span; k++) rest.erase(t.base + k);
+            runs_of(p, rest, runs);
+            for (const auto &t : S.truns) {
+                runs.emplace_back();
+                for (int k = 0; k < t.span; k++) runs.back().push_back(t.base + k);
+            }
+        } else runs_of(p, nodes, runs);
+        RunAlign ral;
+        if ((tmode & RN_ALIGN) || (usesplit && !S.truns.empty()))
+            run_aligns(p, runs, usesplit ? &S : nullptr, (tmode & RN_ALIGN) != 0, ral);
+        const RunAlign *ralp = ral.empty() ? nullptr : &ral;
+
+        std::vector<int> rpos;
+        if (tmode & RN_ORDERS) {
+            std::unordered_map<int, int> first;
+            std::vector<Field> fm2;
+            for (int i = 0; i < p.n; i++) {
+                if (I::empty(p.q[i]) || (usesplit && !reach[(size_t)i])) continue;
+                I::fieldmap(p.q[i], p.op[i], p.props[i], fm2);
+                for (const Field &f : fm2) {
+                    if (f.kind != 'd' || f.base >= RZ) continue;
+                    int nd = usesplit ? S.at(i, f.off) : f.base;
+                    if (nd < 0) continue;
+                    for (int k = 0; k < f.w; k++) first.emplace(nd + k, i);
+                }
+            }
+            rpos.assign(runs.size(), -1);
+            for (size_t ri = 0; ri < runs.size(); ri++) {
+                int pmin = INT_MAX;
+                for (int r : runs[ri]) {
+                    auto it = first.find(r);
+                    pmin = std::min(pmin, it == first.end() ? -1 : it->second);
+                }
+                rpos[ri] = pmin;
+            }
+        }
+        const std::vector<int> *rposp = rpos.empty() ? nullptr : &rpos;
 
         Affinity aff;
-        if (g_coal) {
-            const OpSets &T = ub::S();
-            for (int i = 0; i < p.n; i++) {
-                if (!p.q[i] || !reach[(size_t)i] || p.op[i] != T.O_Mov) continue;
-                u64 q = p.q[i];
-                if (srcb_form(q) != FORM_REG) continue;
-                if (((q >> 16) & 0xF) != 7 || ((q >> 39) & 0xF) != 0xF) continue;
-                int d = (int)(q & 0xFF), s = (int)((q >> 20) & 0xFF);
-                if (d >= RZ || s >= RZ || d == s) continue;
-                int nd = usesplit ? S.at(i, 0) : d;
-                int ns = usesplit ? S.at(i, 20) : s;
-                if (nd < 0 || ns < 0 || nd == ns) continue;
-                if (!nodes.count(nd) || !nodes.count(ns)) continue;
-                aff.push_back({nd, ns});
-                g_coal_pairs++;
-            }
+        for (int i = 0; i < p.n; i++) {
+            if (I::empty(p.q[i]) || !reach[(size_t)i]) continue;
+            typename I::Word q = p.q[i];
+            int d, s;
+            if (!I::reg_move(q, p.op[i], &d, &s) || !I::guard_is_pt(q)) continue;
+            if (d >= RZ || s >= RZ || d == s) continue;
+            int nd = usesplit ? S.at(i, I::mov_dst_field()) : d;
+            int ns = usesplit ? S.at(i, I::mov_src_field()) : s;
+            if (nd < 0 || ns < 0 || nd == ns) continue;
+            if (!nodes.count(nd) || !nodes.count(ns)) continue;
+            aff.push_back({nd, ns});
         }
         const Affinity *affp = aff.empty() ? nullptr : &aff;
         std::unordered_map<int, int> cmap;
-        { PerfScope ps_(&g_perf.x[4]); g_perf.xn[4]++;
-          colour(runs, cadj, pin2, nullptr, -1, cmap, ORD_DEG, affp); }
+        colour<I>(runs, cadj, pin2, nullptr, -1, cmap, ORD_DEG, affp, ralp, rposp);
         int corder = ORD_DEG;
-        if (g_rp_colour) {
+        if ((tmode & RN_ORDERS)) {
 
             for (int o = ORD_DEG + 1; o < ORD_N; o++) {
+                if (o == ORD_DEF && !rposp) continue;
                 std::unordered_map<int, int> alt;
                 try {
-                    colour(runs, cadj, pin2, nullptr, -1, alt, o, affp);
+                    colour<I>(runs, cadj, pin2, nullptr, -1, alt, o, affp, ralp, rposp);
                 } catch (NoFit &) { continue; }
                 if (maxc(alt) < maxc(cmap)) { cmap.swap(alt); corder = o; }
             }
         }
-        int nbank = 0;
         BConf bconf;
         if (bank_aware || g_bank) {
-            PerfScope ps_(&g_perf.x[5]);
             if (usesplit) bank_conflicts_nodes(p, reach, S, bconf);
             else bank_conflicts(p, bconf);
         }
 
         AntiModel amod;
-        if (g_anti) {
-            std::function<int(int, int)> nodeof;
-            if (usesplit) nodeof = [&S](int i, int off) { return S.at(i, off); };
-            else nodeof = [&p](int i, int off) {
-                return (int)((p.q[(size_t)i] >> off) & 0xFF);
-            };
-            { PerfScope ps_(&g_perf.x[6]);
-              build_anti(p, reach, g_icls, g_bbleader, nodeof, amod); }
-        }
+        std::function<int(int, int)> nodeof;
+        if (usesplit) nodeof = [&S](int i, int off) { return S.at(i, off); };
+        else nodeof = [&p](int i, int off) {
+            return I::field_reg(p.q[(size_t)i], off);
+        };
+        build_anti(p, reach, g_icls, g_bbleader, nodeof, amod);
         if (bank_aware) {
             int lim = cmap.empty() ? 1 : maxc(cmap) + 1;
             std::unordered_map<int, int> cmap2;
             bool ok = true;
             try {
-                PerfScope ps_(&g_perf.x[7]); g_perf.xn[7]++;
-                colour(runs, cadj, pin2, &bconf, lim, cmap2, corder, affp);
+                colour<I>(runs, cadj, pin2, &bconf, lim, cmap2, corder, affp, ralp, rposp);
             } catch (NoFit &) { ok = false; }
             if (ok && (cmap2.empty() || maxc(cmap2) < lim)) {
                 cmap.swap(cmap2);
-                nbank = 1;
             }
         }
 
         std::unordered_map<int, int> cmap_rep;
         long long removed = 0;
         if (g_bank && !cmap.empty()) {
-            auto t0 = std::chrono::steady_clock::now();
             cmap_rep = cmap;
 
-            int blim = g_grow_bank ? grow_limit(maxc(cmap) + 1) : maxc(cmap) + 1;
-            { PerfScope ps_(&g_perf.x[8]);
-              removed = bank_repair(runs, cadj, pin2, bconf, blim, cmap_rep); }
-            g_bank_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
-            g_bank_calls++;
+            int blim = maxc(cmap) + 1;
+            removed = bank_repair<I>(runs, cadj, pin2, bconf, blim, cmap_rep, ralp);
         }
         std::vector<int> colof;
         auto emit_from = [&](std::unordered_map<int, int> &cm, Cand &o) {
-            PerfScope ps_(&g_perf.x[10]); g_perf.xn[10]++;
 
             int maxid = 0;
             for (auto &pr : cm) maxid = std::max(maxid, pr.first);
@@ -2181,152 +2455,140 @@ static void renumber_uncached_i(std::vector<u8> &bc, std::vector<u8> &ct,
                         fail("invalid colouring: interfering pair shares a register");
                 }
             }
-            { PerfScope ps2_(&g_perf.x[23]);
             if (usesplit) apply_split(p, reach, S, cm, o.words);
             else {
                 apply_map(p, cm, o.words);
                 gate_operands(p, o.words, cm);
-            } }
+            }
             o.maxcol = maxc(cm);
-            o.decl = (u32)std::max(o.maxcol + 1, 4);
-            o.nruns = (int)runs.size();
-            o.nconstrained = 0;
-            for (auto &r : runs) if (r.size() > 1) o.nconstrained++;
-            o.bank = nbank;
-            { PerfScope ps_(&g_perf.x[13]);
-              o.bankcost = bconf.empty() ? 0 : bank_cost_of(bconf, cm);
-              o.anticost = amod.w.empty() ? 0 : anti_cost_of(amod, cm); }
+            o.decl = I::decl_regs(o.maxcol);
             o.cmap = cm;
             o.bc = bc;
             o.ct = ct;
             for (int i = 0; i < p.n; i++)
-                std::memcpy(o.bc.data() + INSTR_START + p.rel[(size_t)i],
-                            &o.words[(size_t)i], 8);
-            ctl(o.ct)->mProgramRegNum = o.decl;
-            { PerfScope ps_(&g_perf.x[11]); g_perf.xn[11]++; phase_b(o.bc, co); }
-            o.cycles = issue_cycles(o.bc, co);
-            o.warps = occupancy_of((int)o.decl);
+                I::write_word(o.bc, i, o.words[(size_t)i]);
+            I::set_reg_count(o.ct, o.decl);
+            I::phase_b(o.bc, co);
+            o.cycles = I::issue_cycles(o.bc, co);
+            o.warps = I::occupancy_of((int)o.decl);
             o.have = true;
         };
         emit_from(cmap, out);
         if (removed > 0) {
 
-            g_bank_rows++;
             Cand R;
-            auto t1 = std::chrono::steady_clock::now();
             emit_from(cmap_rep, R);
-            g_bank_emit_us += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t1).count();
-            bool ok = R.warps >= out.warps && R.cycles <= out.cycles &&
-                      R.bankcost < out.bankcost;
-            if (g_bank_force || ok) {
-                g_bank_kept++;
-                g_bank_before += out.bankcost;
-                g_bank_after += R.bankcost;
-                out = std::move(R);
-            }
+            out = std::move(R);
         }
 
-        if (g_anti && !amod.w.empty() && !out.cmap.empty()) {
-            g_anti_calls++;
+        if (!amod.w.empty() && !out.cmap.empty()) {
             std::unordered_map<int, int> cm2 = out.cmap;
-            int alim = grow_limit(maxc(out.cmap) + 1);
-            if (g_grow) { g_grow_calls++; g_grow_room += alim - (maxc(out.cmap) + 1); }
-            long long got;
-                { PerfScope ps_(&g_perf.x[9]);
-                  got = anti_repair(runs, cadj, pin2, amod, alim, cm2); }
+            int alim = maxc(out.cmap) + 1;
+            long long got = anti_repair<I>(runs, cadj, pin2, amod, alim, cm2, ralp);
             if (got > 0) {
-                g_anti_rows++;
                 Cand R2;
                 emit_from(cm2, R2);
 
                 for (int i2 = 0; i2 < p.n; i2++) {
-                    u64 m = renumber_mask(p.q[(size_t)i2]);
-                    if ((R2.words[(size_t)i2] & ~m) != (out.words[(size_t)i2] & ~m))
+                    typename I::Word m = I::renumber_mask(p.q[(size_t)i2]);
+                    if (!I::eq_outside(R2.words[(size_t)i2], out.words[(size_t)i2], m)) {
+                        char ha[48], hb[48], hm[48];
+                        I::hex(out.words[(size_t)i2], ha, sizeof ha);
+                        I::hex(R2.words[(size_t)i2], hb, sizeof hb);
+                        I::hex(m, hm, sizeof hm);
                         fail("anti: instruction %d changed outside its register "
-                             "fields (%016llx -> %016llx, mask %016llx)", i2,
-                             (unsigned long long)out.words[(size_t)i2],
-                             (unsigned long long)R2.words[(size_t)i2],
-                             (unsigned long long)m);
+                             "fields (%s -> %s, mask %s)", i2, ha, hb, hm);
+                    }
                 }
-                bool ok2 = R2.warps >= out.warps && R2.cycles < out.cycles;
-                if (g_anti_force || ok2) {
-                    g_anti_kept++;
-                    g_anti_before += out.anticost;
-                    g_anti_after += R2.anticost;
-                    g_anti_cyc_saved += out.cycles - R2.cycles;
-                    out = std::move(R2);
-                }
+                out = std::move(R2);
             }
         }
     };
 
     std::set<int> namenodes = used;
-    SplitMap none;
+    SplitMapT<I> none;
     Cand A;
-    { PerfScope ps_(&g_perf.x[26]); build(false, none, namenodes, adj, A); }
+    build(false, none, namenodes, adj, A);
 
-    Cand B;
-    SplitMap S;
-    Adj nadj;
-    if (g_rp_split) {
-        bool bs_;
-        { PerfScope ps_(&g_perf.x[12]);
-          bs_ = build_split(p, c, reach, L, exit_live, S, nadj); }
-        if (bs_) {
-            std::set<int> nodes = S.nodes;
-            for (int r : nodes) nadj[r];
+    Cand B, Bt;
+    SplitMapT<I> S, St;
+    Adj nadj, nadjt;
+    auto colour_split = [&](SplitMapT<I> &S, Adj &nadj, Cand &B) {
+        std::set<int> nodes = S.nodes;
+        for (int r : nodes) nadj[r];
 
-            int maxid_ = nodes.empty() ? 0 : *nodes.rbegin();
-            std::vector<char> nset((size_t)maxid_ + 1, 0);
-            for (int r : nodes) nset[(size_t)r] = 1;
-            auto nin = [&](int id) {
-                return id >= 0 && id <= maxid_ && nset[(size_t)id];
-            };
-            for (auto it = nadj.begin(); it != nadj.end();) {
-                if (!nin(it->first)) it = nadj.erase(it);
-                else {
-                    std::vector<int> &row = it->second;
-                    row.erase(std::remove_if(row.begin(), row.end(),
-                                  [&](int r) { return !nin(r); }),
-                              row.end());
-                    ++it;
-                }
+        int maxid_ = nodes.empty() ? 0 : *nodes.rbegin();
+        std::vector<char> nset((size_t)maxid_ + 1, 0);
+        for (int r : nodes) nset[(size_t)r] = 1;
+        auto nin = [&](int id) {
+            return id >= 0 && id <= maxid_ && nset[(size_t)id];
+        };
+        for (auto it = nadj.begin(); it != nadj.end();) {
+            if (!nin(it->first)) it = nadj.erase(it);
+            else {
+                std::vector<int> &row = it->second;
+                row.erase(std::remove_if(row.begin(), row.end(),
+                              [&](int r) { return !nin(r); }),
+                          row.end());
+                ++it;
             }
-            { PerfScope ps_(&g_perf.x[27]); build(true, S, nodes, nadj, B); }
         }
+        build(true, S, nodes, nadj, B);
+    };
+    bool bs_;
+    bs_ = build_split(p, c, reach, L, exit_live, S, nadj, true, nullptr, false,
+                      nullptr, tmode & ~RN_SPLIT);
+    if (bs_) colour_split(S, nadj, B);
+    if (tmode & RN_SPLIT) {
+
+        std::vector<char> nosplit;
+        bool settled = false;
+        for (int attempt = 0; attempt < 8 && !settled; attempt++) {
+            std::vector<int> conf;
+            St = SplitMapT<I>();
+            nadjt.clear();
+            bs_ = build_split(p, c, reach, L, exit_live, St, nadjt, true, nullptr, false,
+                              nullptr, tmode, nosplit.empty() ? nullptr : &nosplit,
+                              &conf);
+            if (conf.empty()) settled = true;
+            nosplit.resize((size_t)RZ, 0);
+            for (int r : conf) nosplit[(size_t)r] = 1;
+        }
+        if (settled && bs_ && !St.truns.empty()) colour_split(St, nadjt, Bt);
     }
 
     Cand *pick = &A;
     if (B.have) {
         bool better = B.warps > A.warps ||
                       (B.warps == A.warps && B.cycles <= A.cycles);
-        if (g_rp_force || better) pick = &B;
-        st.rp_offered = 1;
-    }
-    st.rp_used = (pick == &B) ? 1 : 0;
-    if (B.have) {
-        g_rp_offered_n++;
-        if (pick == &B) g_rp_kept_n++;
-        if (pick == &B && B.warps > A.warps) g_rp_occ_n++;
-    }
-    st.rp_webs = B.have ? (int)S.nodes.size() : 0;
 
-    int old_max = maxgpr(p);
-    u32 old_decl = ctl(p.ct)->mProgramRegNum;
+        if ((tmode & RN_REGS) && !I::early_cycles())
+            better = B.warps > A.warps || (B.warps == A.warps && B.maxcol <= A.maxcol);
+        if (better) pick = &B;
+    }
+
+    const bool tpick = Bt.have && Bt.warps > pick->warps;
+    if (tpick) pick = &Bt;
+    st.rp_tuple = tpick ? 1 : 0;
+
+    if (tmode & RN_CHECK) {
+        try {
+            rename_check(p, c, reach, exit_live, pick->words);
+        } catch (const std::exception &e) {
+
+            throw;
+        }
+    }
 
     bc.swap(pick->bc);
     ct.swap(pick->ct);
 
-    st.old_max = old_max;
-    st.new_max = pick->maxcol;
-    st.old_decl = (int)old_decl;
     st.new_decl = (int)pick->decl;
-    st.maxlive = old_maxlive;
-    st.nregs = (int)used.size();
-    st.nruns = pick->nruns;
-    st.bank_pass = pick->bank;
-    st.nconstrained = pick->nconstrained;
 }
+template void renumber<Sm50>(std::vector<u8> &, std::vector<u8> &, bool, bool, RegStats &,
+                             int);
+template void renumber<Sm86>(std::vector<u8> &, std::vector<u8> &, bool, bool, RegStats &,
+                             int);
 
 static u64 sph_get(const u8 *s, int hi, int lo) {
     int width = hi - lo + 1;
@@ -2372,17 +2634,7 @@ void exit_live_regs(const std::vector<u8> &bc, std::vector<int> &out) {
     }
 }
 
-bool g_dce2 = false;
-bool g_dce2_force = false;
-bool g_dce2_early = false;
-long long g_dce2_dead = 0, g_dce2_self = 0, g_dce2_calls = 0, g_dce2_rev = 0;
-
-long long g_dce2_notrunc = 0, g_dce2_badtrunc = 0;
-
-static const u64 DCE2_W_NOP = 0x50b0000000070f00ull;
-
-static bool dce2_deletable_op(const Program &p, int i) {
-    const OpSets &T = S();
+const OpSet &Sm50::dce_ops() {
     static OpSet allow;
     static bool init = false;
     if (!init) {
@@ -2395,6 +2647,13 @@ static bool dce2_deletable_op(const Program &p, int i) {
             "Xmad", "Imad", "Flo", "Popc", "Prmt",
             "F2f", "F2i", "I2f", "I2i"});
     }
+    return allow;
+}
+
+template <class I>
+static bool dce2_deletable_op(const ProgramT<I> &p, int i) {
+    const OpSets &T = I::sets();
+    const OpSet &allow = I::dce_ops();
     int nm = p.op[i];
     if (nm < 0 || !allow[(size_t)nm]) return false;
     if (T.side_effect[(size_t)nm] || T.branchy[(size_t)nm] ||
@@ -2402,28 +2661,26 @@ static bool dce2_deletable_op(const Program &p, int i) {
         T.load_or_store[(size_t)nm]) return false;
 
     std::vector<int> v;
-    RSet all = p.defs[i];
+    auto all = p.defs[i];
     all.unite(p.maydefs[i]);
     all.list(v);
     bool any = false;
     for (int r : v) {
-        if (r >= PREG) return false;
-        if (r < RZ) any = true;
+        if (!is_gpr_key(r)) return false;
+        any = true;
     }
     return any;
 }
 
-static bool dce2_self_copy(const Program &p, int i) {
-    if (p.op[i] != S().O_Mov) return false;
-    u64 q = p.q[i];
-    if (srcb_form(q) != FORM_REG) return false;
-    if (((q >> 39) & 0xF) != 0xF) return false;
+template <class I>
+static bool dce2_self_copy(const ProgramT<I> &p, int i) {
+    int rd, rs;
+    if (!I::reg_move(p.q[i], p.op[i], &rd, &rs)) return false;
     if (p.guarded(i)) return false;
-    int rd = (int)(q & 0xFF);
-    return rd != RZ && rd == (int)((q >> 20) & 0xFF);
+    return rd != RZ && rd == rs;
 }
 
-static bool dce2_reads_cc(const Program &p) {
+bool Sm50::reads_cc(const ProgramT<Sm50> &p) {
     const OpSets &T = S();
     for (int i = 0; i < p.n; i++) {
         u64 q = p.q[i];
@@ -2435,13 +2692,39 @@ static bool dce2_reads_cc(const Program &p) {
     }
     return false;
 }
+template <class I>
+static bool dce2_reads_cc(const ProgramT<I> &p) { return I::reads_cc(p); }
 
-static void dce2_liveout(const Program &p, const CFGraph &c,
+template <class I>
+static u32 stream_rebuild(const ProgramT<I> &p, const std::vector<u8> &bc, u32 co,
+                          std::vector<typename I::Word> &out, std::vector<int> &oldof,
+                          const std::vector<int> &newpos, int nreal, const char *who,
+                          bool run_phase_b, std::vector<u8> &obc,
+                          std::vector<u8> &ct) {
+    const OpSets &T = I::sets();
+    I::pad(out, oldof);
+    for (size_t k = 0; k < oldof.size(); k++) {
+        int i2 = oldof[k];
+        if (i2 < 0 || i2 >= p.n || I::empty(p.q[i2])) continue;
+        if (!T.branchy_imm[(size_t)p.op[i2]]) continue;
+        int t = p.target(i2);
+        if (t < 0 || t > nreal) fail("%s: unresolved branch at slot %d", who, i2);
+        if (!I::set_branch(out[k], (int)k, newpos[(size_t)t]))
+            fail("%s: branch displacement out of range", who);
+    }
+    I::fix_calls(out);
+    u32 co2 = I::assemble(bc, co, out, obc, ct);
+    if (run_phase_b) I::phase_b(obc, co2);
+    I::layout_check(co2, who);
+    return co2;
+}
+
+template <class I>
+static void dce2_liveout(const ProgramT<I> &p, const CFGraph &c,
                          const std::vector<char> &reach,
                          const std::vector<char> &killed,
                          const std::vector<int> &exit_live,
                          std::vector<Mask> &lout) {
-    const OpSets &Te = S();
     int n = p.n;
     Mask seed;
     for (int r : exit_live) seed.set(r);
@@ -2452,10 +2735,10 @@ static void dce2_liveout(const Program &p, const CFGraph &c,
         if (killed[(size_t)i]) continue;
         std::vector<int> v;
         p.defs[i].list(v);
-        for (int r : v) if (r < RZ) dm[(size_t)i].set(r);
-        int spur = spurious_pred(p.op[i], p.q[i]);
+        for (int r : v) if (is_gpr_key(r)) dm[(size_t)i].set(r);
+        int spur = I::spurious_pred(p.op[i], p.q[i]);
         p.uses[i].list(v);
-        for (int r : v) if (r < RZ && r != spur) um[(size_t)i].set(r);
+        for (int r : v) if (is_gpr_key(r) && r != spur) um[(size_t)i].set(r);
     }
     std::vector<int> rorder(order.rbegin(), order.rend());
     bool conv = false;
@@ -2468,7 +2751,7 @@ static void dce2_liveout(const Program &p, const CFGraph &c,
             else
                 for (int t : c.succ[(size_t)i])
                     if (reach[(size_t)t]) lo |= lin[(size_t)t];
-            if (p.op[i] == Te.O_Exit || p.op[i] == Te.O_Ret) lo |= seed;
+            if (c.cat[(size_t)i] == C_EXIT) lo |= seed;
             li = lo;
             li.andnot_or(dm[(size_t)i], um[(size_t)i]);
             if (li != lin[(size_t)i]) { lin[(size_t)i] = li; ch = true; }
@@ -2483,12 +2766,13 @@ static void dce2_liveout(const Program &p, const CFGraph &c,
         else
             for (int t : c.succ[(size_t)i])
                 if (reach[(size_t)t]) lo2 |= lin[(size_t)t];
-        if (p.op[i] == Te.O_Exit || p.op[i] == Te.O_Ret) lo2 |= seed;
+        if (c.cat[(size_t)i] == C_EXIT) lo2 |= seed;
         lout[(size_t)i] = lo2;
     }
 }
 
-static bool dce2_kill_valid(const Program &p, const CFGraph &c,
+template <class I>
+static bool dce2_kill_valid(const ProgramT<I> &p, const CFGraph &c,
                             const std::vector<char> &reach,
                             const std::vector<char> &kill,
                             const std::vector<char> &ghost,
@@ -2500,74 +2784,70 @@ static bool dce2_kill_valid(const Program &p, const CFGraph &c,
         if (!kill[(size_t)i] || !reach[(size_t)i]) continue;
 
         if (dce2_self_copy(p, i)) continue;
-        RSet all = p.defs[i];
+        auto all = p.defs[i];
         all.unite(p.maydefs[i]);
         all.list(v);
         for (int r : v)
-            if (r < RZ && lout[(size_t)i].test(r)) return false;
+            if (is_gpr_key(r) && lout[(size_t)i].test(r)) return false;
     }
     return true;
 }
 
-void dce2(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
-          Dce2Stats &st, bool guard) {
-    const OpSets &T = S();
-    u32 co = const_off(ct);
+template <class I>
+void dce2(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment) {
+    typedef typename I::Word Word;
+    u32 co = I::const_off(ct);
     if (co > bc.size()) fail("dce2: ConstBufOffset past the file");
-    int n = 3 * ((int)co - INSTR_START) / 32;
+    int n = I::nslots(co);
     if (n <= 0) return;
-    g_dce2_calls++;
 
-    Program p;
+    ProgramT<I> p;
     p.load_bytes(bc, ct);
-    if (dce2_reads_cc(p)) { st.cc_declined = 1; return; }
+    if (dce2_reads_cc(p)) return;
     CFGraph c;
     c.build(p, false);
     std::vector<char> reach = c.reachable_from_entry();
     std::vector<int> exit_live;
-    if (fragment) exit_live_regs(bc, exit_live);
+    if (fragment) I::exit_live_regs(bc, exit_live);
 
     std::vector<char> killed((size_t)p.n, 0);
     std::vector<Mask> lout;
-    int rounds = 0, dead = 0, self = 0;
+    int dead = 0, self = 0;
     for (int r = 0; r < 16; r++) {
-        rounds++;
         dce2_liveout(p, c, reach, killed, exit_live, lout);
         bool ch = false;
         for (int i = 0; i < p.n; i++) {
-            if (!reach[(size_t)i] || killed[(size_t)i] || !p.q[i]) continue;
+            if (!reach[(size_t)i] || killed[(size_t)i] || I::empty(p.q[i])) continue;
             if (dce2_self_copy(p, i)) {
                 killed[(size_t)i] = 1; self++; ch = true; continue;
             }
             if (!dce2_deletable_op(p, i)) continue;
-            RSet all = p.defs[i];
+            auto all = p.defs[i];
             all.unite(p.maydefs[i]);
             std::vector<int> v;
             all.list(v);
             bool live = false;
             for (int rg : v)
-                if (rg < RZ && lout[(size_t)i].test(rg)) { live = true; break; }
+                if (is_gpr_key(rg) && lout[(size_t)i].test(rg)) { live = true; break; }
             if (live) continue;
             killed[(size_t)i] = 1; dead++; ch = true;
         }
         if (!ch) break;
     }
-    st.rounds = rounds;
     if (!dead && !self) return;
 
     int nreal = 0;
-    std::vector<u64> words((size_t)n);
+    std::vector<Word> words((size_t)n);
     for (int k = 0; k < n; k++) {
-        std::memcpy(&words[(size_t)k], bc.data() + slot_off(k), 8);
-        if (words[(size_t)k]) nreal = k + 1;
+        words[(size_t)k] = I::read_word(bc, k);
+        if (!I::empty(words[(size_t)k])) nreal = k + 1;
     }
-    size_t blobsz = bc.size() - (size_t)co;
 
     auto build = [&](const std::vector<char> &kill, std::vector<u8> &obc,
                      std::vector<u8> &oct, u32 *oco) -> bool {
         std::vector<int> newidx((size_t)nreal + 1, -1),
                          nextkept((size_t)nreal + 1, -1);
-        std::vector<u64> out;
+        std::vector<Word> out;
         std::vector<int> oldof;
         for (int k = 0; k < nreal; k++) {
             if (k < p.n && kill[(size_t)k]) continue;
@@ -2581,47 +2861,19 @@ void dce2(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
               if (k < nreal && newidx[(size_t)k] >= 0) nk = newidx[(size_t)k];
               nextkept[(size_t)k] = nk;
           } }
-        while (out.size() % 3) { out.push_back(DCE2_W_NOP); oldof.push_back(-1); }
-        for (size_t k = 0; k < oldof.size(); k++) {
-            int i2 = oldof[k];
-            if (i2 < 0 || i2 >= p.n || !p.q[i2]) continue;
-            if (!T.branchy_imm[(size_t)p.op[i2]]) continue;
-            int t = p.target(i2);
-            if (t < 0 || t > nreal) fail("dce2: unresolved branch at slot %d", i2);
-            int nt = nextkept[(size_t)t];
-            int disp = slot_rel(nt) - (slot_rel((int)k) + 8);
-            if (!branch_disp_ok(disp))
-                fail("dce2: branch displacement out of range");
-            out[k] = setbits(out[k], 20, 24, (u64)(u32)disp & 0xFFFFFF);
-        }
-        size_t nb = out.size() / 3;
-        u32 co2 = (u32)(INSTR_START + nb * 32);
-        co2 = (co2 + CBUF_ALIGN - 1) / CBUF_ALIGN * CBUF_ALIGN;
-        obc.assign((size_t)co2 + blobsz, 0);
-        std::memcpy(obc.data(), bc.data(), INSTR_START);
-        for (size_t k = 0; k < out.size(); k++)
-            std::memcpy(obc.data() + slot_off(k), &out[k], 8);
-        if (blobsz) std::memcpy(obc.data() + co2, bc.data() + co, blobsz);
         oct = ct;
-        NVNshaderControl *oc = ctl(oct);
-        oc->mProgramSize = (u32)(SPH_SIZE + nb * 32);
-        oc->mConstBufOffset = co2;
-        oc->mShaderSize = (u32)obc.size();
-        phase_b(obc, co2);
-        int ns = 3 * ((int)co2 - INSTR_START) / 32;
-        if (!slots_ok(ns))
-            fail("dce2: padded instruction count %d is not 12 mod 24", ns);
-        *oco = co2;
+        *oco = stream_rebuild(p, bc, co, out, oldof, nextkept, nreal, "dce2",
+                              true, obc, oct);
         return true;
     };
 
     std::vector<char> kill_trunc = killed;
     std::vector<char> ghost = killed;
-    int extra = (dead + self) % 3, trimmed = 0;
+    int extra = (dead + self) % I::kPad, trimmed = 0;
     if (extra) {
         std::vector<int> kills;
         for (int i = 0; i < p.n; i++) if (killed[(size_t)i]) kills.push_back(i);
-        std::vector<RSet> kdef((size_t)kills.size());
+        std::vector<typename I::RSet> kdef((size_t)kills.size());
         for (size_t k = 0; k < kills.size(); k++) {
             kdef[k] = p.defs[kills[k]];
             kdef[k].unite(p.maydefs[kills[k]]);
@@ -2643,47 +2895,40 @@ void dce2(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
             kill_trunc[(size_t)i] = 0; trimmed++;
         }
         if (trimmed != extra) {
-            kill_trunc = killed; ghost = killed; trimmed = 0; g_dce2_notrunc++;
+            kill_trunc = killed; ghost = killed; trimmed = 0;
         }
     }
 
-    int before = issue_cycles(bc, co);
+    int before = I::issue_cycles(bc, co);
     std::vector<u8> bcA, ctA, bcB, ctB;
     u32 coA = 0, coB = 0;
     build(killed, bcA, ctA, &coA);
-    int cycA = issue_cycles(bcA, coA);
+    int cycA = I::issue_cycles(bcA, coA);
     int cycB = cycA;
     bool useB = false;
     if (trimmed &&
         !dce2_kill_valid(p, c, reach, kill_trunc, ghost, exit_live)) {
 
-        trimmed = 0; g_dce2_badtrunc++;
+        trimmed = 0;
     }
     if (trimmed) {
         build(kill_trunc, bcB, ctB, &coB);
-        cycB = issue_cycles(bcB, coB);
+        cycB = I::issue_cycles(bcB, coB);
         if (cycB < cycA) useB = true;
     }
     int after = useB ? cycB : cycA;
-    int ndel = (dead + self) - (useB ? trimmed : 0);
 
-    if (guard && !g_dce2_force && after > before) {
-        st.reverted = 1; g_dce2_rev++; return;
+    if (after > before) {
+        return;
     }
 
-    st.dead = dead;
-    st.self = self;
-    st.trimmed = useB ? trimmed : 0;
-    st.deleted = ndel;
-    st.cycles_saved = before - after;
-    g_dce2_dead += dead;
-    g_dce2_self += self;
     if (useB) { bc.swap(bcB); ct.swap(ctB); }
     else { bc.swap(bcA); ct.swap(ctA); }
 }
+template void dce2<Sm50>(std::vector<u8> &, std::vector<u8> &, bool);
+template void dce2<Sm86>(std::vector<u8> &, std::vector<u8> &, bool);
 
 bool g_texnarrow = false;
-long long g_texnarrow_sites = 0, g_texnarrow_progs = 0, g_texnarrow_calls = 0;
 
 static const int TN_LUT[2][8] = {
     {0x1, 0x2, 0x4, 0x8, 0x3, 0x9, 0xA, 0xC},
@@ -2697,25 +2942,16 @@ static int tn_prefix(int m, int n) {
     return r;
 }
 
-struct TnShape {
-    bool texs = false;
-    int ch = 0;
-    int n = 0;
-    int reg[4] = {RZ, RZ, RZ, RZ};
-};
-
-static bool tn_shape(const Program &p, int i, TnShape &s) {
+bool Sm50::tex_mask(u64 q, int nm, TnShape &s) {
     const OpSets &T = S();
-    int nm = p.op[i];
     if (nm < 0) return false;
     const char *nv = op_name(nm);
-    u64 q = p.q[i];
     if (T.texs_fam[(size_t)nm]) {
         if (std::strcmp(nv, "Texs") && std::strcmp(nv, "Tlds")) return false;
         int dest = (int)(q & 0xFF), dest2 = (int)((q >> 28) & 0xFF);
         int ch = TN_LUT[dest2 == RZ ? 0 : 1][(q >> 50) & 7];
         if (!ch || dest == RZ) return false;
-        s.texs = true; s.ch = ch; s.n = tn_pc(ch);
+        s.form = 1; s.ch = ch; s.n = tn_pc(ch);
         for (int k = 0; k < s.n; k++) {
             int rd = (k >> 1) ? dest2 : dest;
             s.reg[k] = (rd < RZ) ? rd + (k & 1) : RZ;
@@ -2730,7 +2966,7 @@ static bool tn_shape(const Program &p, int i, TnShape &s) {
         if (!good) return false;
         int dest = (int)(q & 0xFF), ch = (int)((q >> 31) & 0xF);
         if (!ch || dest == RZ) return false;
-        s.texs = false; s.ch = ch; s.n = tn_pc(ch);
+        s.form = 0; s.ch = ch; s.n = tn_pc(ch);
         for (int k = 0; k < s.n; k++)
             s.reg[k] = (dest + k < RZ) ? dest + k : RZ;
         return true;
@@ -2738,10 +2974,10 @@ static bool tn_shape(const Program &p, int i, TnShape &s) {
     return false;
 }
 
-static bool tn_encode(const TnShape &s, int keep, u64 &q) {
+bool Sm50::tex_mask_narrow(const TnShape &s, int keep, u64 &q) {
     int nch = tn_prefix(s.ch, keep);
     if (!nch) return false;
-    if (!s.texs) {
+    if (s.form == 0) {
         q = (q & ~(0xFull << 31)) | ((u64)(unsigned)nch << 31);
         return true;
     }
@@ -2756,20 +2992,20 @@ static bool tn_encode(const TnShape &s, int keep, u64 &q) {
     return false;
 }
 
+template <class I>
 void texnarrow(std::vector<u8> &bc, const std::vector<u8> &ct, bool fragment,
                TexNarrowStats &st) {
-    u32 co = const_off(ct);
+    u32 co = I::const_off(ct);
     if (co > bc.size()) fail("texnarrow: ConstBufOffset past the file");
-    if (3 * ((int)co - INSTR_START) / 32 <= 0) return;
-    g_texnarrow_calls++;
+    if (I::nslots(co) <= 0) return;
 
-    Program p;
+    ProgramT<I> p;
     p.load_bytes(bc, ct);
     CFGraph c;
     c.build(p, false);
     std::vector<char> reach = c.reachable_from_entry();
     std::vector<int> exit_live;
-    if (fragment) exit_live_regs(bc, exit_live);
+    if (fragment) I::exit_live_regs(bc, exit_live);
 
     std::vector<char> ghost((size_t)p.n, 0);
     if (!dce2_reads_cc(p)) {
@@ -2778,29 +3014,27 @@ void texnarrow(std::vector<u8> &bc, const std::vector<u8> &ct, bool fragment,
             dce2_liveout(p, c, reach, ghost, exit_live, gl);
             bool ch = false;
             for (int i = 0; i < p.n; i++) {
-                if (!reach[(size_t)i] || ghost[(size_t)i] || !p.q[i]) continue;
+                if (!reach[(size_t)i] || ghost[(size_t)i] || I::empty(p.q[i])) continue;
                 if (dce2_self_copy(p, i)) {
-                    ghost[(size_t)i] = 1; st.selfcopies++; ch = true; continue;
+                    ghost[(size_t)i] = 1; ch = true; continue;
                 }
                 if (!dce2_deletable_op(p, i)) continue;
-                RSet all = p.defs[i]; all.unite(p.maydefs[i]);
+                typename I::RSet all = p.defs[i]; all.unite(p.maydefs[i]);
                 std::vector<int> v; all.list(v);
                 bool live = false;
                 for (int rg : v)
                     if (rg < RZ && gl[(size_t)i].test(rg)) { live = true; break; }
                 if (live) continue;
-                ghost[(size_t)i] = 1; st.deadops++; ch = true;
+                ghost[(size_t)i] = 1; ch = true;
             }
             if (!ch) break;
         }
         if (!dce2_kill_valid(p, c, reach, ghost, ghost, exit_live)) {
 
-            st.ghostRejected = 1;
-            st.selfcopies = st.deadops = 0;
             std::fill(ghost.begin(), ghost.end(), (char)0);
             for (int i = 0; i < p.n; i++)
-                if (reach[(size_t)i] && p.q[i] && dce2_self_copy(p, i)) {
-                    ghost[(size_t)i] = 1; st.selfcopies++;
+                if (reach[(size_t)i] && !I::empty(p.q[i]) && dce2_self_copy(p, i)) {
+                    ghost[(size_t)i] = 1;
                 }
         }
     }
@@ -2808,16 +3042,16 @@ void texnarrow(std::vector<u8> &bc, const std::vector<u8> &ct, bool fragment,
     dce2_liveout(p, c, reach, ghost, exit_live, lout);
 
     for (int i = 0; i < p.n; i++) {
-        if (!reach[(size_t)i] || !p.q[i]) continue;
+        if (!reach[(size_t)i] || I::empty(p.q[i])) continue;
         TnShape s;
-        if (!tn_shape(p, i, s)) {
+        if (!I::tex_mask(p.q[i], p.op[i], s)) {
 
-            const OpSets &T = S();
+            const OpSets &T = I::sets();
             if (T.tex_bases[(size_t)p.op[i]]) {
-                RSet all = p.defs[i]; all.unite(p.maydefs[i]);
+                typename I::RSet all = p.defs[i]; all.unite(p.maydefs[i]);
                 std::vector<int> v; all.list(v);
                 for (int r : v)
-                    if (r < RZ && !lout[(size_t)i].test(r)) { st.unmodelled++; break; }
+                    if (r < RZ && !lout[(size_t)i].test(r)) break;
             }
             continue;
         }
@@ -2829,24 +3063,23 @@ void texnarrow(std::vector<u8> &bc, const std::vector<u8> &ct, bool fragment,
             keep--;
         }
         if (keep == s.n) continue;
-        st.sites++;
-        if (keep == 0) { st.allDead++; continue; }
-        u64 q = p.q[i];
-        if (!tn_encode(s, keep, q)) { st.declined++; continue; }
-        std::memcpy(bc.data() + INSTR_START + p.rel[i], &q, 8);
+        if (keep == 0) continue;
+        typename I::Word q = p.q[i];
+        if (!I::tex_mask_narrow(s, keep, q)) continue;
+        I::write_word(bc, i, q);
         st.narrowed++;
-        st.comps += s.n - keep;
     }
     if (!st.narrowed) return;
 
     for (int i = 0; i < p.n; i++) {
         if (!ghost[(size_t)i]) continue;
-        std::memcpy(bc.data() + INSTR_START + p.rel[i], &DCE2_W_NOP, 8);
-        st.nopped++;
+        I::write_word(bc, i, I::nop());
     }
-    g_texnarrow_sites += st.narrowed;
-    g_texnarrow_progs++;
 }
+template void texnarrow<Sm50>(std::vector<u8> &, const std::vector<u8> &, bool,
+                              TexNarrowStats &);
+template void texnarrow<Sm86>(std::vector<u8> &, const std::vector<u8> &, bool,
+                              TexNarrowStats &);
 
 static int max_sync_nesting(const Program &p) {
     const OpSets &T = S();
@@ -2982,9 +3215,7 @@ static void analyse(const Program &p, CtlFacts &f) {
 
     f.n_real = n_real;
     f.rate_weight = rate;
-    f.n_ipa = n_ipa;
     f.ipa_redundant = n_ipa - ipa_addrs;
-    f.max_gpr = max_gpr;
     f.gpr_count = max_gpr + 1;
     f.slm_low = slm_low;
     f.slm_high = 0;
@@ -2996,8 +3227,6 @@ static void analyse(const Program &p, CtlFacts &f) {
     f.kills_pixels = kills ? 1 : 0;
     f.tex_slots = tex_order;
     f.tex_bindless = bindless;
-    f.back_edges = back_edges;
-    f.max_stack_depth = depth;
     f.ncolor_outputs = 0;
     if (f.fragment) {
         int n = 0;
@@ -3014,123 +3243,20 @@ void control_facts(const std::vector<u8> &bc, const std::vector<u8> &ct,
     analyse(p, f);
 }
 
-void pressure_facts(const std::vector<u8> &bc, const std::vector<u8> &ct,
-                    PressFacts &f) {
-    Program p;
-    p.load_bytes(bc, ct);
-    CFGraph c;
-    c.build(p, false);
-    std::vector<char> reach = c.reachable_from_entry();
-    std::vector<int> exit_live;
-    exit_live_regs(bc, exit_live);
-    Live L;
-    liveness(p, c, reach, exit_live, L);
-    f = PressFacts();
-    for (int i = 0; i < p.n; i++) {
-        if (!reach[(size_t)i]) continue;
-        f.npts++;
-        int pc = L.live[(size_t)i].popcount();
-        if (pc > f.maxlive) f.maxlive = pc;
-        if (pc > 48) f.over48++;
-        if (pc > 56) f.over56++;
-    }
-
-    for (int i = 0; i < p.n; i++) {
-        if (!p.q[i] || !reach[(size_t)i] || p.op[i] != S().O_Mov) continue;
-        u64 q = p.q[i];
-        int src = (int)((q >> 20) & 0xFF), dst = (int)(q & 0xFF);
-        if (src >= RZ || ((q >> 16) & 0xF) != 7 || src == dst) continue;
-        f.mov_rr++;
-        bool live_out = false;
-        for (int t : c.succ[(size_t)i])
-            if (reach[(size_t)t] && L.live[(size_t)t].test(src)) live_out = true;
-        if (live_out) f.mov_srclive++; else f.mov_srcdead++;
-    }
-
-
-    std::set<int> used;
-    std::vector<int> ureg;
-    for (int i = 0; i < p.n; i++) {
-        if (!p.q[i] || !reach[(size_t)i]) continue;
-        RSet u = p.defs[i];
-        u.unite(p.maydefs[i]);
-        u.unite(p.uses[i]);
-        u.list(ureg);
-        for (int r : ureg) if (r < RZ) used.insert(r);
-    }
-    f.nnames = (int)used.size();
-    int n = p.n;
-
-    Mask pseed;
-    for (int r : exit_live) pseed.set(r);
-    std::vector<Mask> lout((size_t)n);
-    for (int i = 0; i < n; i++) {
-        if (!reach[(size_t)i]) continue;
-        if (c.succ[(size_t)i].empty()) lout[(size_t)i] = pseed;
-        else
-            for (int t : c.succ[(size_t)i])
-                if (reach[(size_t)t]) lout[(size_t)i] |= L.live[(size_t)t];
-        if (p.op[i] == S().O_Exit || p.op[i] == S().O_Ret)
-            lout[(size_t)i] |= pseed;
-    }
-    std::vector<int> uf(2 * (size_t)n);
-    std::function<int(int)> find = [&](int x) {
-        while (uf[(size_t)x] != x) { uf[(size_t)x] = uf[(size_t)uf[(size_t)x]];
-                                     x = uf[(size_t)x]; }
-        return x;
-    };
-    for (int r : used) {
-        if (r >= RZ) continue;
-        for (int i = 0; i < 2 * n; i++) uf[(size_t)i] = i;
-        std::vector<char> has(2 * (size_t)n, 0);
-        for (int i = 0; i < n; i++) {
-            if (!reach[(size_t)i]) continue;
-            bool lo = lout[(size_t)i].test(r);
-            bool ln = L.live[(size_t)i].test(r);
-            has[(size_t)(2 * i)] = ln;
-            has[(size_t)(2 * i + 1)] = lo;
-            bool killed = L.dmask[(size_t)i].test(r) && !p.maydefs[i].has(r);
-            if (ln && lo && !killed) {
-                int a = find(2 * i), b = find(2 * i + 1);
-                if (a != b) uf[(size_t)b] = a;
-            }
-        }
-        for (int i = 0; i < n; i++) {
-            if (!reach[(size_t)i] || !has[(size_t)(2 * i + 1)]) continue;
-            for (int t : c.succ[(size_t)i]) {
-                if (!reach[(size_t)t] || !has[(size_t)(2 * t)]) continue;
-                int a = find(2 * i + 1), b = find(2 * t);
-                if (a != b) uf[(size_t)b] = a;
-            }
-        }
-        std::set<int> comps;
-        for (int i = 0; i < 2 * n; i++) if (has[(size_t)i]) comps.insert(find(i));
-        f.nwebs += comps.empty() ? 1 : (int)comps.size();
-    }
-}
-
-bool g_imap_trim = true;
 static void imap_trim(u8 *sph, CtlFacts &f) {
     u8 *gv = sph + SPH_IMAP_GENERIC_OFF;
     u32 sv;
     std::memcpy(&sv, sph + SPH_IMAP_SYSVALS_OFF, 4);
-    int declared = 0, kept = 0;
     for (int loc = 0; loc < 32; loc++) {
         u8 keep = 0;
         for (int c = 0; c < 4; c++) {
-            if ((gv[loc] >> (2 * c)) & 3) declared++;
             if ((f.imap_gen_read[(size_t)loc] >> c) & 1) keep |= (u8)(3 << (2 * c));
         }
         if (!f.imap_indexed) gv[loc] &= keep;
-        for (int c = 0; c < 4; c++) if ((gv[loc] >> (2 * c)) & 3) kept++;
     }
-    declared += __builtin_popcount(sv);
 
     if (!f.imap_indexed) sv &= f.imap_sys_read | ((u32)1 << NvSysval_PositionW);
-    kept += __builtin_popcount(sv);
     std::memcpy(sph + SPH_IMAP_SYSVALS_OFF, &sv, 4);
-    f.imap_declared = declared;
-    f.imap_kept = kept;
 }
 
 void control_rewrite(std::vector<u8> &bc, std::vector<u8> &ct, CtlFacts &f) {
@@ -3147,7 +3273,7 @@ void control_rewrite(std::vector<u8> &bc, std::vector<u8> &ct, CtlFacts &f) {
     sph_set(sph, SPH_BITS_LOCAL_MEM_LO_SZ, (u64)f.slm_low);
     sph_set(sph, SPH_BITS_LOCAL_MEM_HI_SZ, (u64)f.slm_high);
     sph_set(sph, SPH_BITS_LOCAL_MEM_CRS_SZ, (u64)f.slm_crs);
-    if (f.fragment && g_imap_trim) imap_trim(sph, f);
+    if (f.fragment) imap_trim(sph, f);
 
     NVNshaderControl *c = ctl(ct);
     c->debugBuildId[0] = UBERSPEC_STAMP_MAGIC;
@@ -3455,17 +3581,9 @@ void verify(const std::vector<u8> &bc, const std::vector<u8> &ct, bool run_v8,
     }
 }
 
-bool g_anticopy = false, g_anticopy_force = false;
-long long g_ac_rows = 0, g_ac_kept = 0, g_ac_copies = 0, g_ac_sites = 0,
-          g_ac_calls = 0;
+bool g_anticopy = false;
 
 long long g_ac_budget = -1;
-long long g_ac_declined = 0;
-
-long long g_ac_ladder = 0;
-
-static const u64 AC_W_NOP = 0x50b0000000070f00ull;
-static const u64 AC_MOV_TMPL = 0x5c9807800ff70000ull;
 
 extern "C" {
 int ub_anticopy_probe(const unsigned char *bc, unsigned int constOff, int nreal,
@@ -3475,41 +3593,47 @@ int ub_anticopy_probe(const unsigned char *bc, unsigned int constOff, int nreal,
 void ub_set_webs(const int *wuse, const int *wdef, int stride);
 }
 
-void anticopy(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
-              AnticopyStats &st) {
-    const OpSets &T = S();
-    u32 co = const_off(ct);
-    if (co > bc.size()) fail("anticopy: ConstBufOffset past the file");
-    int n = 3 * ((int)co - INSTR_START) / 32;
-    if (n <= 0) return;
-    g_ac_calls++;
-    Program p;
-    p.load_bytes(bc, ct);
-    int nreal = 0;
-    for (int k = 0; k < n && k < p.n; k++) if (p.q[k]) nreal = k + 1;
-    if (nreal <= 0) return;
-
+int Sm50::anticopy_sites(const Program &p, const std::vector<u8> &bc, u32 co, int n,
+                         int nreal, const std::vector<int> &wuse,
+                         const std::vector<int> &wdef, int *slot, int *reg, int *bs,
+                         int *be, int *cnt) {
     std::vector<u8> pdefs, puses;
     pred_masks(p, n, pdefs, puses);
+    ub_set_webs(wuse.data(), wdef.data(), WEB_STRIDE);
+    int ns = ub_anticopy_probe(bc.data(), co, nreal, 1, pdefs.data(), puses.data(),
+                               slot, reg, bs, be, cnt, n);
+    ub_set_webs(nullptr, nullptr, 0);
+    return ns;
+}
+
+template <class I>
+void anticopy(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
+              AnticopyStats &st) {
+    typedef typename I::Word Word;
+    u32 co = I::const_off(ct);
+    if (co > bc.size()) fail("anticopy: ConstBufOffset past the file");
+    int n = I::nslots(co);
+    if (n <= 0) return;
+    ProgramT<I> p;
+    p.load_bytes(bc, ct);
+    int nreal = 0;
+    for (int k = 0; k < n && k < p.n; k++) if (!I::empty(p.q[k])) nreal = k + 1;
+    if (nreal <= 0) return;
+
     std::vector<int> wuse, wdef;
     int wn = 0;
-    if (!web_map(bc, ct, fragment, wuse, wdef, wn) || wn != n) return;
+    if (!web_map<I>(bc, ct, fragment, wuse, wdef, wn) || wn != n) return;
     std::vector<int> o_slot((size_t)n), o_reg((size_t)n), o_bs((size_t)n),
                      o_be((size_t)n), o_cnt((size_t)n);
-    ub_set_webs(wuse.data(), wdef.data(), WEB_STRIDE);
-    int ns = ub_anticopy_probe(bc.data(), co, nreal, 1, pdefs.data(),
-                               puses.data(), o_slot.data(), o_reg.data(),
-                               o_bs.data(), o_be.data(), o_cnt.data(), n);
-    ub_set_webs(nullptr, nullptr, 0);
+    int ns = I::anticopy_sites(p, bc, co, n, nreal, wuse, wdef, o_slot.data(),
+                               o_reg.data(), o_bs.data(), o_be.data(), o_cnt.data());
     if (ns <= 0) return;
-    st.sites = ns;
-    g_ac_sites += ns;
 
     CFGraph c;
     c.build(p, false);
     std::vector<char> reach = c.reachable_from_entry();
     std::vector<int> exit_live;
-    if (fragment) exit_live_regs(bc, exit_live);
+    if (fragment) I::exit_live_regs(bc, exit_live);
     Live L;
     liveness(p, c, reach, exit_live, L);
     std::set<int> pinset(exit_live.begin(), exit_live.end());
@@ -3523,8 +3647,8 @@ void anticopy(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
     std::vector<std::vector<Field>> fms((size_t)p.n);
     std::set<int> wide;
     for (int i = 0; i < p.n; i++) {
-        if (!p.q[i] || !reach[(size_t)i]) continue;
-        fieldmap(p.q[i], p.op[i], p.props[i], fms[(size_t)i]);
+        if (I::empty(p.q[i]) || !reach[(size_t)i]) continue;
+        I::fieldmap(p.q[i], p.op[i], p.props[i], fms[(size_t)i]);
         for (const Field &f : fms[(size_t)i])
             if (f.w > 1)
                 for (int k = 0; k < f.w; k++) wide.insert(f.base + k);
@@ -3556,20 +3680,20 @@ void anticopy(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
         int bs = pr.first.first, r = pr.first.second, be = bend[bs];
         std::vector<Site> &ss = pr.second;
         if (r < 0 || r >= RZ || bs < 0 || be > p.n || !reach[(size_t)bs]) {
-            st.skip_shape++; continue;
+            continue;
         }
 
         bool ok = true;
         for (int i = bs + 1; i < be && ok; i++) {
-            if (!p.q[i]) continue;
+            if (I::empty(p.q[i])) continue;
             if (npred[(size_t)i] != 1 || onepred[(size_t)i] != i - 1) ok = false;
         }
-        if (!ok) { st.skip_cfg++; continue; }
+        if (!ok) continue;
 
         std::vector<int> D;
         std::vector<char> widedef((size_t)p.n, 0), wideuse((size_t)p.n, 0);
         for (int i = bs; i < be; i++) {
-            if (!p.q[i]) continue;
+            if (I::empty(p.q[i])) continue;
             for (const Field &f : fms[(size_t)i]) {
                 bool hit = (r >= f.base && r < f.base + f.w);
                 if (!hit) continue;
@@ -3580,13 +3704,13 @@ void anticopy(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
             }
         }
         if (D.empty()) {
-            st.skip_shape++; continue;
+            continue;
         }
         int k = (int)D.size();
 
         auto narrow = [&](int lo, int hi, bool copy) {
             for (int i = lo; i <= hi; i++) {
-                if (!p.q[i]) continue;
+                if (I::empty(p.q[i])) continue;
                 if (i == lo && !copy) { if (widedef[(size_t)i]) return false; continue; }
                 if (i == hi) { if (wideuse[(size_t)i]) return false; continue; }
                 if (widedef[(size_t)i] || wideuse[(size_t)i]) return false;
@@ -3598,7 +3722,7 @@ void anticopy(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
         for (const Site &sv : ss) {
             int j = -1;
             for (int q = 0; q < k; q++) if (D[(size_t)q] == sv.slot) { j = q + 1; break; }
-            if (j < 0) { st.skip_shape++; continue; }
+            if (j < 0) continue;
             if (j == 1) want[k >= 2 ? 1 : 0] += sv.cnt;
             else want[j - 1] += sv.cnt;
         }
@@ -3606,13 +3730,13 @@ void anticopy(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
             int j = w.first, lo, hi;
             bool copy = (j == 0);
             if (copy) {
-                if (!L.live[(size_t)bs].test(r)) { st.skip_shape++; continue; }
+                if (!L.live[(size_t)bs].test(r)) continue;
                 lo = bs; hi = D[0];
             } else {
                 lo = D[(size_t)(j - 1)]; hi = D[(size_t)j];
             }
             if (!narrow(lo, hi, copy)) {
-                st.skip_shape++; continue;
+                continue;
             }
             std::set<int> &tk = taken[bs];
             int fresh = -1;
@@ -3620,7 +3744,7 @@ void anticopy(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
                 if (pinset.count(cand) || wide.count(cand) || tk.count(cand)) continue;
                 if (is_free(cand, lo, hi)) fresh = cand;
             }
-            if (fresh < 0) { st.skip_reg++; continue; }
+            if (fresh < 0) continue;
             tk.insert(fresh);
             plans.push_back({bs, lo, hi, r, fresh, w.second, copy});
         }
@@ -3632,17 +3756,16 @@ void anticopy(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
         for (const Plan &pl : plans) (pl.copy ? cp : loc).push_back(pl);
         std::sort(cp.begin(), cp.end(),
                   [](const Plan &a, const Plan &b) { return a.cnt > b.cnt; });
-        int cur_pad = (3 - nreal % 3) % 3;
+        int cur_pad = (I::kPad - nreal % I::kPad) % I::kPad;
         size_t keep = cp.size();
         for (size_t kk = cp.size(); kk + 3 > cp.size() && kk > 0; kk--) {
-            int pad = (3 - (int)((nreal + (int)kk) % 3)) % 3;
+            int pad = (I::kPad - (int)((nreal + (int)kk) % I::kPad)) % I::kPad;
             if (pad <= cur_pad) { keep = kk; break; }
         }
         if (cp.size() && keep == cp.size()) {
-            int pad = (3 - (int)((nreal + (int)keep) % 3)) % 3;
+            int pad = (I::kPad - (int)((nreal + (int)keep) % I::kPad)) % I::kPad;
             if (pad > cur_pad && cp.size() <= 2) keep = 0;
         }
-        st.trimmed = (int)(cp.size() - keep);
         cp.resize(keep);
         plans = loc;
         plans.insert(plans.end(), cp.begin(), cp.end());
@@ -3660,30 +3783,27 @@ void anticopy(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
     }
     if (plans.empty()) return;
 
-    std::vector<u64> words((size_t)nreal);
-    for (int kk = 0; kk < nreal; kk++)
-        std::memcpy(&words[(size_t)kk], bc.data() + slot_off(kk), 8);
-    int ncopy = 0;
+    std::vector<Word> words((size_t)nreal);
+    for (int kk = 0; kk < nreal; kk++) words[(size_t)kk] = I::read_word(bc, kk);
     for (const Plan &pl : plans) {
-        if (pl.copy) ncopy++;
         for (int i = pl.lo; i <= pl.hi; i++) {
-            if (!p.q[i]) continue;
-            u64 q = words[(size_t)i];
+            if (I::empty(p.q[i])) continue;
+            Word q = words[(size_t)i];
             for (const Field &f : fms[(size_t)i]) {
                 if (f.base != pl.reg || f.w != 1) continue;
                 if (i == pl.hi && f.kind == 'd') continue;
                 if (i == pl.lo && !pl.copy && f.kind == 'u') continue;
-                q = set_field8(q, f.off, pl.fresh);
+                I::set_field(q, f.off, pl.fresh);
             }
             words[(size_t)i] = q;
         }
     }
 
-    std::multimap<int, u64> ins;
+    std::multimap<int, Word> ins;
     for (const Plan &pl : plans)
         if (pl.copy)
-            ins.emplace(pl.bs, set_field8(set_field8(AC_MOV_TMPL, 0, pl.fresh), 20, pl.reg));
-    std::vector<u64> out;
+            ins.emplace(pl.bs, I::make_mov(pl.fresh, pl.reg));
+    std::vector<Word> out;
     std::vector<int> oldof, leadpos((size_t)nreal + 1, -1);
     for (int kk = 0; kk < nreal; kk++) {
         auto range = ins.equal_range(kk);
@@ -3697,68 +3817,19 @@ void anticopy(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
         oldof.push_back(kk);
     }
     leadpos[(size_t)nreal] = (int)out.size();
-    while (out.size() % 3) { out.push_back(AC_W_NOP); oldof.push_back(-1); }
-    for (size_t kk = 0; kk < oldof.size(); kk++) {
-        int i2 = oldof[kk];
-        if (i2 < 0 || i2 >= p.n || !p.q[i2]) continue;
-        if (!T.branchy_imm[(size_t)p.op[i2]]) continue;
-        int t = p.target(i2);
-        if (t < 0 || t > nreal) fail("anticopy: unresolved branch at slot %d", i2);
-        int nt = leadpos[(size_t)t];
-        int disp = slot_rel(nt) - (slot_rel((int)kk) + 8);
-        if (!branch_disp_ok(disp)) fail("anticopy: branch displacement out of range");
-        out[kk] = setbits(out[kk], 20, 24, (u64)(u32)disp & 0xFFFFFF);
-    }
-    size_t blobsz = bc.size() - (size_t)co;
-    size_t nb = out.size() / 3;
-    u32 co2 = (u32)(INSTR_START + nb * 32);
-    co2 = (co2 + CBUF_ALIGN - 1) / CBUF_ALIGN * CBUF_ALIGN;
-    std::vector<u8> obc((size_t)co2 + blobsz, 0);
-    std::memcpy(obc.data(), bc.data(), INSTR_START);
-    for (size_t kk = 0; kk < out.size(); kk++)
-        std::memcpy(obc.data() + slot_off(kk), &out[kk], 8);
-    if (blobsz) std::memcpy(obc.data() + co2, bc.data() + co, blobsz);
-    NVNshaderControl *oc = ctl(ct);
-    oc->mProgramSize = (u32)(SPH_SIZE + nb * 32);
-    oc->mConstBufOffset = co2;
-    oc->mShaderSize = (u32)obc.size();
-    phase_b(obc, co2);
-    int ns2 = 3 * ((int)co2 - INSTR_START) / 32;
-    if (!slots_ok(ns2))
-        fail("anticopy: padded instruction count %d is not 12 mod 24", ns2);
+    std::vector<u8> obc;
+    stream_rebuild(p, bc, co, out, oldof, leadpos, nreal, "anticopy", true, obc, ct);
     bc.swap(obc);
     st.applied = (int)plans.size();
-    st.copies = ncopy;
-    g_ac_copies += ncopy;
 }
+template void anticopy<Sm50>(std::vector<u8> &, std::vector<u8> &, bool, AnticopyStats &);
+template void anticopy<Sm86>(std::vector<u8> &, std::vector<u8> &, bool, AnticopyStats &);
 
-void tail_counters(long long *v) {
-    rn_counters(v);
-    const long long rest[TAIL_NCTR - RN_NCTR] = {
-        g_dce2_dead, g_dce2_self, g_dce2_calls, g_dce2_rev,
-        g_dce2_notrunc, g_dce2_badtrunc,
-        g_texnarrow_sites, g_texnarrow_progs, g_texnarrow_calls,
-        g_ac_rows, g_ac_kept, g_ac_copies, g_ac_sites, g_ac_calls,
-        g_ac_declined, g_ac_ladder};
-    for (int i = 0; i < TAIL_NCTR - RN_NCTR; i++) v[RN_NCTR + i] = rest[i];
-}
-void tail_counters_add(const long long *d) {
-    rn_counters_add(d);
-    long long *const dst[TAIL_NCTR - RN_NCTR] = {
-        &g_dce2_dead, &g_dce2_self, &g_dce2_calls, &g_dce2_rev,
-        &g_dce2_notrunc, &g_dce2_badtrunc,
-        &g_texnarrow_sites, &g_texnarrow_progs, &g_texnarrow_calls,
-        &g_ac_rows, &g_ac_kept, &g_ac_copies, &g_ac_sites, &g_ac_calls,
-        &g_ac_declined, &g_ac_ladder};
-    for (int i = 0; i < TAIL_NCTR - RN_NCTR; i++) *dst[i] += d[RN_NCTR + i];
-}
-
-bool g_sink = false;
 int g_sink_back = 2;
 int g_sink_rounds = 32;
 int g_sink_ext = 1;
 
-static bool sink_movable(const Program &p, int i) {
+bool Sm50::sink_op(u64 q, int nm) {
     const OpSets &T = S();
     static OpSet allow;
     static bool init = false;
@@ -3771,57 +3842,63 @@ static bool sink_movable(const Program &p, int i) {
             "Lop", "Lop3", "Lop32i", "Shl", "Shr", "Shf", "Bfe", "Bfi",
             "Xmad", "Imad", "Prmt", "F2f", "F2i", "I2f", "I2i"});
     }
-    int nm = p.op[i];
-    u64 q = p.q[i];
     if (nm < 0 || !allow[(size_t)nm]) return false;
-    if (T.side_effect[(size_t)nm] || T.branchy[(size_t)nm] ||
-        T.pushy[(size_t)nm] || T.tex_bases[(size_t)nm]) return false;
     if (nm == T.O_Ldc) { if (((q >> 8) & 0xFF) != RZ) return false; }
     else if (T.load_or_store[(size_t)nm]) return false;
-    if (((q >> 16) & 0xF) != 7) return false;
     if (nm == T.O_Mov && ((q >> 39) & 0xF) != 0xF) return false;
     return true;
 }
 
-long long g_spill_ok = 0, g_remat_ok = 0;
+template <class I>
+static bool sink_movable(const ProgramT<I> &p, int i) {
+    const OpSets &T = I::sets();
+    int nm = p.op[i];
+    if (nm < 0 || !I::sink_op(p.q[i], nm)) return false;
+    if (T.side_effect[(size_t)nm] || T.branchy[(size_t)nm] ||
+        T.pushy[(size_t)nm] || T.tex_bases[(size_t)nm]) return false;
+    if (!I::guard_is_pt(p.q[i])) return false;
+    return true;
+}
+
+template <class I>
 static bool sink_round_i(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
                        SinkStats &st);
+template <class I>
 static bool sink_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
                        SinkStats &st) {
-    PerfScope ps_(&g_perf.x[30]); g_perf.xn[30]++;
-    bool r_ = sink_round_i(bc, ct, fragment, st);
-    if (r_) g_perf.xn[39]++;
+    bool r_ = sink_round_i<I>(bc, ct, fragment, st);
     return r_;
 }
+template <class I>
 static bool sink_round_i(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
                        SinkStats &st) {
-    const OpSets &T = S();
-    u32 co = const_off(ct);
+    typedef typename I::Word Word;
+    const OpSets &T = I::sets();
+    u32 co = I::const_off(ct);
     if (co > bc.size()) fail("sink: ConstBufOffset past the file");
-    int n = 3 * ((int)co - INSTR_START) / 32;
+    int n = I::nslots(co);
     if (n <= 0) return false;
-    Program p;
+    ProgramT<I> p;
     p.load_bytes(bc, ct);
     if (dce2_reads_cc(p)) return false;
     int nreal = 0;
-    for (int k = 0; k < n && k < p.n; k++) if (p.q[k]) nreal = k + 1;
+    for (int k = 0; k < n && k < p.n; k++) if (!I::empty(p.q[k])) nreal = k + 1;
     if (nreal <= 0) return false;
     CFGraph c;
     std::vector<char> reach;
     std::vector<int> exit_live;
     std::vector<char> is_exit((size_t)RZ, 0);
     Live L;
-    { PerfScope ps_(&g_perf.x[35]);
     c.build(p, false);
     reach = c.reachable_from_entry();
-    if (fragment) exit_live_regs(bc, exit_live);
+    if (fragment) I::exit_live_regs(bc, exit_live);
     for (int r : exit_live) if (r >= 0 && r < RZ) is_exit[(size_t)r] = 1;
-    liveness(p, c, reach, exit_live, L); }
+    liveness(p, c, reach, exit_live, L);
 
     std::vector<char> leader((size_t)nreal + 1, 0);
     leader[0] = 1;
     for (int i = 0; i < nreal; i++) {
-        if (!p.q[i] || !reach[(size_t)i]) continue;
+        if (I::empty(p.q[i]) || !reach[(size_t)i]) continue;
         bool falls = false;
         for (int t : c.succ[(size_t)i]) {
             if (t == i + 1) falls = true;
@@ -3831,12 +3908,10 @@ static bool sink_round_i(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment
             leader[(size_t)i + 1] = 1;
     }
 
-    PerfSpan dom_span(&g_perf.x[36]);
     int W = 0;
     std::vector<u64> dom;
-    { PerfScope ps_(&g_perf.x[31]);
-      if (!dominators(c, reach, nreal, W, dom))
-          fail("sink: the dominator fixpoint did not converge"); }
+    if (!dominators(c, reach, nreal, W, dom))
+        fail("sink: the dominator fixpoint did not converge");
     auto has = [&](const std::vector<u64> &v, int row, int b) {
         return (v[(size_t)row * W + (b >> 6)] >> (b & 63)) & 1;
     };
@@ -3847,7 +3922,7 @@ static bool sink_round_i(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment
     int maxlive = 0;
     std::vector<int> lpc((size_t)nreal, -1);
     for (int i = 0; i < nreal; i++)
-        if (p.q[i] && reach[(size_t)i]) {
+        if (!I::empty(p.q[i]) && reach[(size_t)i]) {
             lpc[(size_t)i] = L.live[(size_t)i].popcount();
             maxlive = std::max(maxlive, lpc[(size_t)i]);
         }
@@ -3899,11 +3974,10 @@ static bool sink_round_i(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment
         int bt = blk[(size_t)t], bj = blk[(size_t)j];
         return bt == bj ? j < t : (bool)rowhas(bwd, bt, bj);
     };
-    dom_span.stop();
 
-    std::vector<std::vector<int>> touch((size_t)PREG + 8), wtouch((size_t)PREG + 8);
+    std::vector<std::vector<int>> touch((size_t)I::key_limit()),
+        wtouch((size_t)I::key_limit());
     {
-        PerfScope ps_(&g_perf.x[37]);
         std::vector<int> tl;
         for (int j = 0; j < nreal; j++) {
             if (!reach[(size_t)j]) continue;
@@ -3922,7 +3996,6 @@ static bool sink_round_i(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment
         }
     }
 
-    st.r_shape = st.r_loop = st.r_nodom = st.r_near = st.r_clob = st.r_nocross = st.r_ext = 0;
     std::vector<int> target((size_t)nreal, -1);
     std::vector<std::vector<int>> mrefs((size_t)nreal);
     std::vector<int> dl, ml, ul, refs;
@@ -3932,34 +4005,30 @@ static bool sink_round_i(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment
     for (int i = 0; i < nreal; i++) if (peak[(size_t)i]) peakpts.push_back(i);
     int d = -1, lo = -1, best = -1, t2 = -1;
 
-    auto trace = [&](int, const char *) {
-    };
-    PerfSpan loop_span(&g_perf.x[38]);
     for (int i = 0; i < nreal; i++) {
-        if (!p.q[i] || !reach[(size_t)i] || !sink_movable(p, i)) continue;
+        if (I::empty(p.q[i]) || !reach[(size_t)i] || !sink_movable(p, i)) continue;
         p.defs[i].list(dl);
         p.maydefs[i].list(ml);
         p.uses[i].list(ul);
         d = -1; lo = -1; best = -1; t2 = -1;
-        if (dl.size() != 1 || !ml.empty()) { st.r_shape++; continue; }
+        if (dl.size() != 1 || !ml.empty()) continue;
         d = dl[0];
-        if (d < 0 || d >= RZ || is_exit[(size_t)d]) { st.r_shape++; continue; }
+        if (d < 0 || d >= RZ || is_exit[(size_t)d]) continue;
         bool selfsrc = false;
         for (int s : ul) if (s == d) selfsrc = true;
-        if (selfsrc) { st.r_shape++; trace(i, "selfsrc"); continue; }
-        st.cands++;
+        if (selfsrc) continue;
 
         const int bi = blk[(size_t)i];
-        if (rowhas(fwd, bi, bi)) { st.r_loop++; trace(i, "loop"); continue; }
+        if (rowhas(fwd, bi, bi)) continue;
         refs.clear();
         for (int j : touch[(size_t)d]) if (fwd_in(i, j)) refs.push_back(j);
-        if (refs.empty()) { st.r_loop++; trace(i, "norefs"); continue; }
+        if (refs.empty()) continue;
 
         best = -1;
         lo = refs[0];
         for (int r : refs) if (r < lo) lo = r;
 
-        if (lo <= i) { st.r_nodom++; trace(i, "nodom"); continue; }
+        if (lo <= i) continue;
         const int w0 = i >> 6, w1 = lo >> 6;
         for (int w = w0; w <= w1; w++) common[(size_t)w] = ~(u64)0;
         for (int r : refs) {
@@ -3976,11 +4045,11 @@ static bool sink_round_i(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment
             best = t;
             break;
         }
-        if (best < 0) { st.r_nodom++; trace(i, "nodom"); continue; }
+        if (best < 0) continue;
 
         t2 = best;
         for (int k = 0; k < g_sink_back && t2 > i + 1 && !leader[(size_t)t2]; k++) t2--;
-        if (t2 <= i + 1) { st.r_near++; trace(i, "near"); continue; }
+        if (t2 <= i + 1) continue;
         {
 
             auto between = [&](int j) { return fwd_in(i, j) && bwd_in(t2, j); };
@@ -3988,21 +4057,20 @@ static bool sink_round_i(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment
             for (int j : touch[(size_t)d]) if (between(j)) { clob = true; break; }
             for (size_t k = 0; k < ul.size() && !clob; k++)
                 for (int j : wtouch[(size_t)ul[k]]) if (between(j)) { clob = true; break; }
-            if (clob) { st.r_clob++; trace(i, "clob"); continue; }
+            if (clob) continue;
             bool crosses = false;
             for (int x : peakpts) if (between(x)) { crosses = true; break; }
-            if (!crosses) { st.r_nocross++; trace(i, "nocross"); continue; }
+            if (!crosses) continue;
 
             int ext = 0;
             for (int s : ul)
                 if (s >= 0 && s < RZ && !L.live[(size_t)t2].test(s)) ext++;
-            if (ext > g_sink_ext) { st.r_ext++; trace(i, "ext"); continue; }
+            if (ext > g_sink_ext) continue;
         }
         target[(size_t)i] = t2;
         mrefs[(size_t)i] = refs;
         moved++;
         st.moved++;
-        st.slots += t2 - i;
     }
 
     for (bool again = true; again;) {
@@ -4022,16 +4090,14 @@ static bool sink_round_i(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment
             }
         }
     }
-    loop_span.stop();
     if (!moved) return false;
 
-    std::vector<u64> words((size_t)nreal);
-    for (int k = 0; k < nreal; k++)
-        std::memcpy(&words[(size_t)k], bc.data() + slot_off(k), 8);
+    std::vector<Word> words((size_t)nreal);
+    for (int k = 0; k < nreal; k++) words[(size_t)k] = I::read_word(bc, k);
     std::vector<std::vector<int>> before((size_t)nreal + 1);
     for (int i = 0; i < nreal; i++)
         if (target[(size_t)i] >= 0) before[(size_t)target[(size_t)i]].push_back(i);
-    std::vector<u64> out;
+    std::vector<Word> out;
     std::vector<int> oldof, leadpos((size_t)nreal + 1, -1);
     for (int k = 0; k < nreal; k++) {
         for (int i : before[(size_t)k]) {
@@ -4048,47 +4114,45 @@ static bool sink_round_i(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment
     if ((int)out.size() != nreal) fail("sink: permutation changed the length");
     for (int kk = 0; kk < nreal; kk++) {
         int i2 = oldof[(size_t)kk];
-        if (i2 < 0 || i2 >= p.n || !p.q[i2]) continue;
+        if (i2 < 0 || i2 >= p.n || I::empty(p.q[i2])) continue;
         if (!T.branchy_imm[(size_t)p.op[i2]]) continue;
         int t = p.target(i2);
         if (t < 0 || t > nreal) fail("sink: unresolved branch at slot %d", i2);
         int nt = leadpos[(size_t)t];
-        int disp = slot_rel(nt) - (slot_rel(kk) + 8);
-        if (!branch_disp_ok(disp)) fail("sink: branch displacement out of range");
-        out[(size_t)kk] = setbits(out[(size_t)kk], 20, 24, (u64)(u32)disp & 0xFFFFFF);
+        if (!I::set_branch(out[(size_t)kk], kk, nt))
+            fail("sink: branch displacement out of range");
     }
-    for (int kk = 0; kk < nreal; kk++)
-        std::memcpy(bc.data() + slot_off(kk), &out[(size_t)kk], 8);
+    for (int kk = 0; kk < nreal; kk++) I::write_word(bc, kk, out[(size_t)kk]);
     return true;
 }
 
 int g_remat_max = 8;
-int g_sink_remat = 1;
 
+template <class I>
 static bool remat_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
                         SinkStats &st) {
-    const OpSets &T = S();
-    u32 co = const_off(ct);
+    typedef typename I::Word Word;
+    u32 co = I::const_off(ct);
     if (co > bc.size()) fail("remat: ConstBufOffset past the file");
-    int n = 3 * ((int)co - INSTR_START) / 32;
+    int n = I::nslots(co);
     if (n <= 0) return false;
-    Program p;
+    ProgramT<I> p;
     p.load_bytes(bc, ct);
     if (dce2_reads_cc(p)) return false;
     int nreal = 0;
-    for (int k = 0; k < n && k < p.n; k++) if (p.q[k]) nreal = k + 1;
+    for (int k = 0; k < n && k < p.n; k++) if (!I::empty(p.q[k])) nreal = k + 1;
     if (nreal <= 0) return false;
     CFGraph c;
     c.build(p, false);
     std::vector<char> reach = c.reachable_from_entry();
     std::vector<int> exit_live;
-    if (fragment) exit_live_regs(bc, exit_live);
+    if (fragment) I::exit_live_regs(bc, exit_live);
     std::vector<char> is_exit((size_t)RZ, 0);
     for (int r : exit_live) if (r >= 0 && r < RZ) is_exit[(size_t)r] = 1;
     Live L;
     liveness(p, c, reach, exit_live, L);
 
-    SplitMap SM;
+    SplitMapT<I> SM;
     Adj unused_adj;
 
     static std::vector<std::vector<int>> innode;
@@ -4105,7 +4169,7 @@ static bool remat_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
     std::vector<char> leader((size_t)nreal + 1, 0);
     leader[0] = 1;
     for (int i = 0; i < nreal; i++) {
-        if (!p.q[i] || !reach[(size_t)i]) continue;
+        if (I::empty(p.q[i]) || !reach[(size_t)i]) continue;
         bool falls = false;
         for (int t : c.succ[(size_t)i]) {
             if (t == i + 1) falls = true;
@@ -4120,7 +4184,7 @@ static bool remat_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
     int maxlive = 0;
     std::vector<int> lpc((size_t)nreal, -1);
     for (int i = 0; i < nreal; i++)
-        if (p.q[i] && reach[(size_t)i]) {
+        if (!I::empty(p.q[i]) && reach[(size_t)i]) {
             lpc[(size_t)i] = L.live[(size_t)i].popcount();
             maxlive = std::max(maxlive, lpc[(size_t)i]);
         }
@@ -4133,8 +4197,8 @@ static bool remat_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
     std::vector<char> used((size_t)RZ, 0);
     std::unordered_map<int, std::vector<int>> ndefs, nuses;
     for (int i = 0; i < nreal; i++) {
-        if (!p.q[i] || !reach[(size_t)i]) continue;
-        fieldmap(p.q[i], p.op[i], p.props[i], fms[(size_t)i]);
+        if (I::empty(p.q[i]) || !reach[(size_t)i]) continue;
+        I::fieldmap(p.q[i], p.op[i], p.props[i], fms[(size_t)i]);
         for (const Field &f : fms[(size_t)i]) {
             for (int k = 0; k < f.w; k++)
                 if (f.base + k >= 0 && f.base + k < RZ) {
@@ -4156,7 +4220,7 @@ static bool remat_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
 
     struct Src { int off, name, node; };
     auto shape = [&](int i, int &d, int &doff, std::vector<Src> &srcs) {
-        if (!p.q[i] || !reach[(size_t)i] || !sink_movable(p, i)) return false;
+        if (I::empty(p.q[i]) || !reach[(size_t)i] || !sink_movable(p, i)) return false;
         std::vector<int> dl, ml;
         p.defs[i].list(dl);
         p.maydefs[i].list(ml);
@@ -4179,10 +4243,9 @@ static bool remat_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
         return true;
     };
 
-    std::vector<u64> words((size_t)nreal);
-    for (int k = 0; k < nreal; k++)
-        std::memcpy(&words[(size_t)k], bc.data() + slot_off(k), 8);
-    std::multimap<int, u64> ins;
+    std::vector<Word> words((size_t)nreal);
+    for (int k = 0; k < nreal; k++) words[(size_t)k] = I::read_word(bc, k);
+    std::multimap<int, Word> ins;
     std::vector<char> gone((size_t)nreal, 0);
     std::unordered_map<int, int> chain_name;
     std::set<int> gone_nodes;
@@ -4197,40 +4260,36 @@ static bool remat_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
         if (dn < 0) continue;
         auto dit = ndefs.find(dn);
 
-        std::string why;
-        auto rej = [&](const char *) {
-        };
         if (dit == ndefs.end()) continue;
-        if (copy_reads.count(dn)) { rej("read by a copy"); continue; }
+        if (copy_reads.count(dn)) continue;
 
         {
             bool same = true;
-            u64 w0 = p.q[i] & ~((u64)0xFF << doff);
             for (int k : dit->second) {
                 if (k == i) continue;
                 int dk, doffk;
                 std::vector<Src> srcsk;
                 if (gone[(size_t)k] || !shape(k, dk, doffk, srcsk) || dk != d ||
-                    doffk != doff || (p.q[k] & ~((u64)0xFF << doffk)) != w0 ||
+                    doffk != doff || !I::eq_but_field(p.q[k], p.q[i], doffk) ||
                     srcsk.size() != srcs.size()) { same = false; break; }
                 for (size_t z = 0; z < srcs.size(); z++)
                     if (srcsk[z].off != srcs[z].off || srcsk[z].node != srcs[z].node) same = false;
                 if (!same) break;
             }
-            if (!same) { rej("merged"); continue; }
+            if (!same) continue;
         }
         auto uit = nuses.find(dn);
         if (uit == nuses.end() || uit->second.empty()) continue;
         const std::vector<int> &refs = uit->second;
         bool self = false;
         for (int r : refs) if (r == i) self = true;
-        if (self) { rej("self"); continue; }
+        if (self) continue;
         std::map<int, int> firstref;
         for (int r : refs) {
             auto it = firstref.find(block[(size_t)r]);
             if (it == firstref.end() || r < it->second) firstref[block[(size_t)r]] = r;
         }
-        if ((int)firstref.size() > g_remat_max) { rej("blocks"); continue; }
+        if ((int)firstref.size() > g_remat_max) continue;
 
         bool gain = false;
         for (int x : peakpts) {
@@ -4241,10 +4300,9 @@ static bool remat_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
             for (int k = 0; k < g_sink_back && at > fit->first; k++) at--;
             if (at > x) { gain = true; break; }
         }
-        if (!gain) { rej("nogain"); continue; }
-        st.cands++;
+        if (!gain) continue;
 
-        struct Plan { int at; std::vector<std::pair<int, u64>> pre; u64 word; };
+        struct Plan { int at; std::vector<std::pair<int, Word>> pre; Word word; };
         std::vector<Plan> plans;
         bool ok = true;
         int F = -1;
@@ -4263,10 +4321,10 @@ static bool remat_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
             for (int k = 0; k < g_sink_back && at > pr.first; k++) at--;
             Plan pl;
             pl.at = at;
-            u64 w = p.q[i];
+            Word w = p.q[i];
             for (const Src &s : srcs) {
                 if (gone_nodes.count(s.node)) {
-                    why = " src R" + std::to_string(s.name) + " retired this round"; ok = false; break;
+                    ok = false; break;
                 }
                 if (node_in(s.name, at) == s.node) {
                     named.push_back(s.node);
@@ -4275,20 +4333,17 @@ static bool remat_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
 
                 auto sd = ndefs.find(s.node);
                 if (sd == ndefs.end() || sd->second.size() != 1) {
-                    why = " src R" + std::to_string(s.name) + " merged"; ok = false; break;
+                    ok = false; break;
                 }
                 int k = sd->second[0];
                 int d2, doff2;
                 std::vector<Src> srcs2;
                 if (k == i || gone[(size_t)k] || !shape(k, d2, doff2, srcs2)) {
-                    why = " src R" + std::to_string(s.name) + " def " + std::to_string(k) +
-                          " " + p.name(k) + " not recomputable"; ok = false; break;
+                    ok = false; break;
                 }
-                u64 w2 = p.q[k];
+                Word w2 = p.q[k];
                 for (const Src &s2 : srcs2) {
                     if (gone_nodes.count(s2.node) || node_in(s2.name, at) != s2.node) {
-                        why = " src R" + std::to_string(s.name) + " def " + std::to_string(k) +
-                              " " + p.name(k) + " needs R" + std::to_string(s2.name);
                         ok = false; break;
                     }
                     named.push_back(s2.node);
@@ -4296,29 +4351,31 @@ static bool remat_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
                 if (!ok) break;
                 int f2 = chain_reg(s.node);
                 if (f2 < 0) { ok = false; break; }
-                w2 = set_field8(w2, doff2, f2);
+                I::set_field(w2, doff2, f2);
                 pl.pre.push_back({k, w2});
-                w = set_field8(w, s.off, f2);
+                I::set_field(w, s.off, f2);
             }
             if (!ok) break;
             pl.word = w;
             plans.push_back(pl);
         }
-        if (!ok) { rej("src"); continue; }
+        if (!ok) continue;
         F = fresh();
         if (F < 0) break;
         for (auto &pr : chain_alloc) chain_name[pr.first] = pr.second;
         copy_reads.insert(named.begin(), named.end());
         for (Plan &pl : plans) {
             for (auto &pw : pl.pre) ins.emplace(pl.at, pw.second);
-            ins.emplace(pl.at, set_field8(pl.word, doff, F));
+            Word wf = pl.word;
+            I::set_field(wf, doff, F);
+            ins.emplace(pl.at, wf);
             made += 1 + (int)pl.pre.size();
         }
         for (int r : refs) {
-            u64 q = words[(size_t)r];
+            Word q = words[(size_t)r];
             for (const Field &f : fms[(size_t)r])
                 if (f.kind == 'u' && f.base == d && f.w == 1 && SM.at(r, f.off) == dn)
-                    q = set_field8(q, f.off, F);
+                    I::set_field(q, f.off, F);
             words[(size_t)r] = q;
         }
         for (int k : dit->second) gone[(size_t)k] = 1;
@@ -4326,9 +4383,8 @@ static bool remat_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
         st.moved++;
     }
     if (!made) return false;
-    st.slots += made;
 
-    std::vector<u64> out;
+    std::vector<Word> out;
     std::vector<int> oldof, leadpos((size_t)nreal + 1, -1);
     for (int kk = 0; kk < nreal; kk++) {
         auto range = ins.equal_range(kk);
@@ -4343,35 +4399,8 @@ static bool remat_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
         oldof.push_back(kk);
     }
     leadpos[(size_t)nreal] = (int)out.size();
-    static const u64 W_NOP = 0x50b0000000070f00ull;
-    while (out.size() % 3) { out.push_back(W_NOP); oldof.push_back(-1); }
-    for (size_t kk = 0; kk < oldof.size(); kk++) {
-        int i2 = oldof[kk];
-        if (i2 < 0 || i2 >= p.n || !p.q[i2]) continue;
-        if (!T.branchy_imm[(size_t)p.op[i2]]) continue;
-        int t = p.target(i2);
-        if (t < 0 || t > nreal) fail("remat: unresolved branch at slot %d", i2);
-        int nt = leadpos[(size_t)t];
-        int disp = slot_rel(nt) - (slot_rel((int)kk) + 8);
-        if (!branch_disp_ok(disp)) fail("remat: branch displacement out of range");
-        out[kk] = setbits(out[kk], 20, 24, (u64)(u32)disp & 0xFFFFFF);
-    }
-    size_t blobsz = bc.size() - (size_t)co;
-    size_t nb = out.size() / 3;
-    u32 co2 = (u32)(INSTR_START + nb * 32);
-    co2 = (co2 + CBUF_ALIGN - 1) / CBUF_ALIGN * CBUF_ALIGN;
-    std::vector<u8> obc((size_t)co2 + blobsz, 0);
-    std::memcpy(obc.data(), bc.data(), INSTR_START);
-    for (size_t kk = 0; kk < out.size(); kk++)
-        std::memcpy(obc.data() + slot_off(kk), &out[kk], 8);
-    if (blobsz) std::memcpy(obc.data() + co2, bc.data() + co, blobsz);
-    NVNshaderControl *oc = ctl(ct);
-    oc->mProgramSize = (u32)(SPH_SIZE + nb * 32);
-    oc->mConstBufOffset = co2;
-    oc->mShaderSize = (u32)obc.size();
-    int ns2 = 3 * ((int)co2 - INSTR_START) / 32;
-    if (!slots_ok(ns2))
-        fail("remat: padded instruction count %d is not 12 mod 24", ns2);
+    std::vector<u8> obc;
+    stream_rebuild(p, bc, co, out, oldof, leadpos, nreal, "remat", false, obc, ct);
     bc.swap(obc);
     return true;
 }
@@ -4380,28 +4409,27 @@ int g_spill_max = 4;
 
 int g_spill_warps = 20;
 
-static const u64 SPILL_STL = 0xEF5400000007FF00ull;
-static const u64 SPILL_LDL = 0xEF4400000007FF00ull;
-
+template <class I>
 static bool spill_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
                         SinkStats &st) {
-    const OpSets &T = S();
+    typedef typename I::Word Word;
+    const OpSets &T = I::sets();
     if (g_spill_max <= 0) return false;
-    u32 co = const_off(ct);
+    u32 co = I::const_off(ct);
     if (co > bc.size()) fail("spill: ConstBufOffset past the file");
-    int n = 3 * ((int)co - INSTR_START) / 32;
+    int n = I::nslots(co);
     if (n <= 0) return false;
-    Program p;
+    ProgramT<I> p;
     p.load_bytes(bc, ct);
     if (dce2_reads_cc(p)) return false;
     int nreal = 0;
-    for (int k = 0; k < n && k < p.n; k++) if (p.q[k]) nreal = k + 1;
+    for (int k = 0; k < n && k < p.n; k++) if (!I::empty(p.q[k])) nreal = k + 1;
     if (nreal <= 0) return false;
     CFGraph c;
     c.build(p, false);
     std::vector<char> reach = c.reachable_from_entry();
     std::vector<int> exit_live;
-    if (fragment) exit_live_regs(bc, exit_live);
+    if (fragment) I::exit_live_regs(bc, exit_live);
     std::vector<char> is_exit((size_t)RZ, 0);
     for (int r : exit_live) if (r >= 0 && r < RZ) is_exit[(size_t)r] = 1;
     Live L;
@@ -4409,18 +4437,18 @@ static bool spill_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
 
     int next_off = 0;
     for (int i = 0; i < nreal; i++) {
-        if (!p.q[i] || !reach[(size_t)i] || !T.local_ops[(size_t)p.op[i]]) continue;
-        u64 q = p.q[i];
-        if (((q >> 8) & 0xFF) != RZ) return false;
-        int32_t off = lmem_off(q);
-        int w = mem_data_regs(q, p.op[i]);
+        if (I::empty(p.q[i]) || !reach[(size_t)i] || !T.local_ops[(size_t)p.op[i]]) continue;
+        int areg, w;
+        int32_t off;
+        I::lmem_access(p.q[i], p.op[i], &areg, &off, &w);
+        if (areg != RZ) return false;
         if (off < 0) return false;
         if (off + 4 * w > next_off) next_off = off + 4 * w;
     }
     int nslots = g_spill_max - next_off / 4;
     if (nslots <= 0) return false;
 
-    SplitMap SM;
+    SplitMapT<I> SM;
     Adj unused_adj;
 
     static std::vector<std::vector<int>> innode;
@@ -4435,7 +4463,7 @@ static bool spill_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
     std::vector<char> leader((size_t)nreal + 1, 0);
     leader[0] = 1;
     for (int i = 0; i < nreal; i++) {
-        if (!p.q[i] || !reach[(size_t)i]) continue;
+        if (I::empty(p.q[i]) || !reach[(size_t)i]) continue;
         bool falls = false;
         for (int t : c.succ[(size_t)i]) {
             if (t == i + 1) falls = true;
@@ -4449,12 +4477,12 @@ static bool spill_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
 
     int maxlive = 0;
     for (int i = 0; i < nreal; i++)
-        if (p.q[i] && reach[(size_t)i])
+        if (!I::empty(p.q[i]) && reach[(size_t)i])
             maxlive = std::max(maxlive, L.live[(size_t)i].popcount());
-    if (occupancy_of(maxlive) > g_spill_warps) return false;
+    if (I::occupancy_of(maxlive) > g_spill_warps) return false;
     std::vector<int> peakpts;
     for (int i = 0; i < nreal; i++)
-        if (p.q[i] && reach[(size_t)i] && L.live[(size_t)i].popcount() >= maxlive - 1)
+        if (!I::empty(p.q[i]) && reach[(size_t)i] && L.live[(size_t)i].popcount() >= maxlive - 1)
             peakpts.push_back(i);
     if (peakpts.empty()) return false;
 
@@ -4463,8 +4491,8 @@ static bool spill_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
     std::unordered_map<int, std::vector<int>> ndefs, nuses;
     std::unordered_map<int, int> nname;
     for (int i = 0; i < nreal; i++) {
-        if (!p.q[i] || !reach[(size_t)i]) continue;
-        fieldmap(p.q[i], p.op[i], p.props[i], fms[(size_t)i]);
+        if (I::empty(p.q[i]) || !reach[(size_t)i]) continue;
+        I::fieldmap(p.q[i], p.op[i], p.props[i], fms[(size_t)i]);
         for (const Field &f : fms[(size_t)i]) {
             for (int k = 0; k < f.w; k++)
                 if (f.base + k >= 0 && f.base + k < RZ) {
@@ -4501,8 +4529,7 @@ static bool spill_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
             if (dit == ndefs.end() || uit == nuses.end() || uit->second.empty()) continue;
             bool ok = true;
             for (int k : dit->second) {
-                u64 q = p.q[k];
-                if (((q >> 16) & 0xF) != 7 || T.branchy[(size_t)p.op[k]] ||
+                if (!I::guard_is_pt(p.q[k]) || T.branchy[(size_t)p.op[k]] ||
                     T.pushy[(size_t)p.op[k]] || T.local_ops[(size_t)p.op[k]]) { ok = false; break; }
                 std::vector<int> ml;
                 p.maydefs[k].list(ml);
@@ -4546,10 +4573,9 @@ static bool spill_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
         return a.nblocks < b.nblocks;
     });
 
-    std::vector<u64> words((size_t)nreal);
-    for (int k = 0; k < nreal; k++)
-        std::memcpy(&words[(size_t)k], bc.data() + slot_off(k), 8);
-    std::multimap<int, u64> ins;
+    std::vector<Word> words((size_t)nreal);
+    for (int k = 0; k < nreal; k++) words[(size_t)k] = I::read_word(bc, k);
+    std::multimap<int, Word> ins;
     int made = 0, taken = 0;
     for (const Cand &cd : cands) {
         if (taken >= nslots) break;
@@ -4559,7 +4585,7 @@ static bool spill_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
         const std::vector<int> &defs = ndefs[cd.node];
         const std::vector<int> &uses = nuses[cd.node];
         for (int k : defs) {
-            ins.emplace(k + 1, SPILL_STL | (u64)cd.name | ((u64)off << 20));
+            ins.emplace(k + 1, I::make_stl(off, cd.name));
             made++;
         }
         std::map<int, int> firstref;
@@ -4570,23 +4596,22 @@ static bool spill_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
         for (auto &pr : firstref) {
             int at = pr.second;
             for (int k = 0; k < g_sink_back && at > pr.first; k++) at--;
-            ins.emplace(at, SPILL_LDL | (u64)F | ((u64)off << 20));
+            ins.emplace(at, I::make_ldl(F, off));
             made++;
         }
         for (int u : uses) {
-            u64 q = words[(size_t)u];
+            Word q = words[(size_t)u];
             for (const Field &f : fms[(size_t)u])
                 if (f.kind == 'u' && f.base == cd.name && f.w == 1 && SM.at(u, f.off) == cd.node)
-                    q = set_field8(q, f.off, F);
+                    I::set_field(q, f.off, F);
             words[(size_t)u] = q;
         }
         taken++;
         st.moved++;
     }
     if (!made) return false;
-    st.slots += made;
 
-    std::vector<u64> out;
+    std::vector<Word> out;
     std::vector<int> oldof, leadpos((size_t)nreal + 1, -1);
     for (int kk = 0; kk <= nreal; kk++) {
         auto range = ins.equal_range(kk);
@@ -4600,95 +4625,69 @@ static bool spill_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
         out.push_back(words[(size_t)kk]);
         oldof.push_back(kk);
     }
-    static const u64 W_NOP = 0x50b0000000070f00ull;
-    while (out.size() % 3) { out.push_back(W_NOP); oldof.push_back(-1); }
-    for (size_t kk = 0; kk < oldof.size(); kk++) {
-        int i2 = oldof[kk];
-        if (i2 < 0 || i2 >= p.n || !p.q[i2]) continue;
-        if (!T.branchy_imm[(size_t)p.op[i2]]) continue;
-        int t = p.target(i2);
-        if (t < 0 || t > nreal) fail("spill: unresolved branch at slot %d", i2);
-        int nt = leadpos[(size_t)t];
-        int disp = slot_rel(nt) - (slot_rel((int)kk) + 8);
-        if (!branch_disp_ok(disp)) fail("spill: branch displacement out of range");
-        out[kk] = setbits(out[kk], 20, 24, (u64)(u32)disp & 0xFFFFFF);
-    }
-    size_t blobsz = bc.size() - (size_t)co;
-    size_t nb = out.size() / 3;
-    u32 co2 = (u32)(INSTR_START + nb * 32);
-    co2 = (co2 + CBUF_ALIGN - 1) / CBUF_ALIGN * CBUF_ALIGN;
-    std::vector<u8> obc((size_t)co2 + blobsz, 0);
-    std::memcpy(obc.data(), bc.data(), INSTR_START);
-    for (size_t kk = 0; kk < out.size(); kk++)
-        std::memcpy(obc.data() + slot_off(kk), &out[kk], 8);
-    if (blobsz) std::memcpy(obc.data() + co2, bc.data() + co, blobsz);
-    NVNshaderControl *oc = ctl(ct);
-    oc->mProgramSize = (u32)(SPH_SIZE + nb * 32);
-    oc->mConstBufOffset = co2;
-    oc->mShaderSize = (u32)obc.size();
-    int ns2 = 3 * ((int)co2 - INSTR_START) / 32;
-    if (!slots_ok(ns2))
-        fail("spill: padded instruction count %d is not 12 mod 24", ns2);
+    std::vector<u8> obc;
+    stream_rebuild(p, bc, co, out, oldof, leadpos, nreal, "spill", false, obc, ct);
     bc.swap(obc);
     return true;
 }
 
-long long g_sink_unclean = 0;
+template <class I>
 static bool entry_live_grew(const std::vector<u8> &bc, const std::vector<u8> &ct,
                            const std::vector<int> &before) {
     std::vector<int> now;
-    entry_live(bc, ct, now);
+    entry_live<I>(bc, ct, now);
     for (int r : now)
         if (std::find(before.begin(), before.end(), r) == before.end())
             return true;
     return false;
 }
 
+template <class I>
 void sink_cheap(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
                 SinkStats &st) {
     bool changed = false;
     std::vector<int> ent0;
-    entry_live(bc, ct, ent0);
+    entry_live<I>(bc, ct, ent0);
     std::vector<u8> kb, kc;
     for (int r = 0; r < g_sink_rounds; r++) {
-        if (!sink_round(bc, ct, fragment, st)) break;
+        if (!sink_round<I>(bc, ct, fragment, st)) break;
         changed = true;
     }
-    if (g_sink_remat) {
-        for (int r = 0; r < g_sink_rounds; r++) {
-            bool rr_;
-            kb = bc; kc = ct;
-            { PerfScope ps_(&g_perf.x[32]); g_perf.xn[32]++;
-              rr_ = remat_round(bc, ct, fragment, st); if (rr_) g_remat_ok++; }
-            if (rr_ && entry_live_grew(bc, ct, ent0)) {
-                bc.swap(kb); ct.swap(kc); rr_ = false; g_sink_unclean++;
-            }
-            if (!rr_) break;
-            changed = true;
-            for (int r2 = 0; r2 < g_sink_rounds; r2++)
-                if (!sink_round(bc, ct, fragment, st)) break;
+    for (int r = 0; r < g_sink_rounds; r++) {
+        bool rr_;
+        kb = bc; kc = ct;
+        rr_ = remat_round<I>(bc, ct, fragment, st);
+        if (rr_ && entry_live_grew<I>(bc, ct, ent0)) {
+            bc.swap(kb); ct.swap(kc); rr_ = false;
         }
+        if (!rr_) break;
+        changed = true;
+        for (int r2 = 0; r2 < g_sink_rounds; r2++)
+            if (!sink_round<I>(bc, ct, fragment, st)) break;
     }
     bool sp_;
     kb = bc; kc = ct;
-    { PerfScope ps_(&g_perf.x[33]); g_perf.xn[33]++;
-      sp_ = g_sink_remat && spill_round(bc, ct, fragment, st); if (sp_) g_spill_ok++; }
-    if (sp_ && entry_live_grew(bc, ct, ent0)) {
-        bc.swap(kb); ct.swap(kc); sp_ = false; g_sink_unclean++;
+    sp_ = spill_round<I>(bc, ct, fragment, st);
+    if (sp_ && entry_live_grew<I>(bc, ct, ent0)) {
+        bc.swap(kb); ct.swap(kc); sp_ = false;
     }
     if (sp_) {
         changed = true;
         for (int r2 = 0; r2 < g_sink_rounds; r2++)
-            if (!sink_round(bc, ct, fragment, st)) break;
+            if (!sink_round<I>(bc, ct, fragment, st)) break;
     }
 
-    if (changed) { PerfScope ps_(&g_perf.x[34]); g_perf.xn[34]++;
-                   phase_b(bc, const_off(ct)); }
+    if (changed) {
+        I::phase_b(bc, I::const_off(ct));
+    }
 }
+template void sink_cheap<Sm50>(std::vector<u8> &, std::vector<u8> &, bool, SinkStats &);
+template void sink_cheap<Sm86>(std::vector<u8> &, std::vector<u8> &, bool, SinkStats &);
 
+template <class I>
 void entry_live(const std::vector<u8> &bc, const std::vector<u8> &ct,
                 std::vector<int> &out) {
-    Program p;
+    ProgramT<I> p;
     p.load_bytes(bc, ct);
     CFGraph c;
     c.build(p, false);
@@ -4697,40 +4696,41 @@ void entry_live(const std::vector<u8> &bc, const std::vector<u8> &ct,
     live_entry(p, c, reach, ent);
     ent.bits(out);
 }
+template void entry_live<Sm50>(const std::vector<u8> &, const std::vector<u8> &,
+                               std::vector<int> &);
+template void entry_live<Sm86>(const std::vector<u8> &, const std::vector<u8> &,
+                               std::vector<int> &);
 
 bool g_vn = false;
-bool g_vn_tex = false;
-long long g_vn_calls = 0, g_vn_rounds = 0, g_vn_merged = 0, g_vn_deleted = 0;
-long long g_vn_rev = 0, g_vn_groups = 0;
-long long g_vn_rows = 0, g_vn_kept = 0, g_vn_ladder = 0;
 
-static bool vn_cse_op(const Program &p, int i) {
-    const OpSets &T = S();
+template <class I>
+static bool vn_cse_op(const ProgramT<I> &p, int i) {
+    const OpSets &T = I::sets();
     int nm = p.op[i];
     if (nm < 0) return false;
     if (T.side_effect[(size_t)nm] || T.branchy[(size_t)nm] ||
         T.pushy[(size_t)nm] || T.freebie[(size_t)nm]) return false;
     if (T.tex_bases[(size_t)nm]) {
-        if (!g_vn_tex) return false;
+        return false;
     } else {
         if (!T.pure_cse[(size_t)nm] && nm != T.O_Mov && nm != T.O_Mov32i)
             return false;
         if (T.load_or_store[(size_t)nm] && nm != T.O_Ldc) return false;
     }
-    u64 q = p.q[i];
-    if (((q >> 16) & 0xF) != 7) return false;
+    if (!I::guard_is_pt(p.q[i])) return false;
     if (p.maydefs[i].any()) return false;
     std::vector<int> v;
     p.defs[i].list(v);
     if (v.empty()) return false;
-    for (int r : v) if (r >= RZ) return false;
-    int spur = spurious_pred(nm, q);
+    for (int r : v) if (!is_gpr_key(r)) return false;
+    int spur = I::spurious_pred(nm, p.q[i]);
     p.uses[i].list(v);
-    for (int r : v) if (r >= PREG && r != spur) return false;
+    for (int r : v) if (!is_gpr_key(r) && r != spur) return false;
     return true;
 }
 
-static int vn_dead_sweep(const Program &p, const CFGraph &c,
+template <class I>
+static int vn_dead_sweep(const ProgramT<I> &p, const CFGraph &c,
                          const std::vector<char> &reach,
                          const std::vector<int> &exit_live,
                          std::vector<char> &killed) {
@@ -4741,11 +4741,11 @@ static int vn_dead_sweep(const Program &p, const CFGraph &c,
         dce2_liveout(p, c, reach, killed, exit_live, lout);
         bool ch = false;
         for (int i = 0; i < p.n; i++) {
-            if (!reach[(size_t)i] || killed[(size_t)i] || !p.q[i]) continue;
+            if (!reach[(size_t)i] || killed[(size_t)i] || I::empty(p.q[i])) continue;
             if (!vn_cse_op(p, i)) continue;
             p.defs[i].list(v);
             bool live = false;
-            for (int rg : v) if (rg < RZ && lout[(size_t)i].test(rg)) live = true;
+            for (int rg : v) if (is_gpr_key(rg) && lout[(size_t)i].test(rg)) live = true;
             if (live) continue;
             killed[(size_t)i] = 1; dead++; ch = true;
         }
@@ -4754,13 +4754,12 @@ static int vn_dead_sweep(const Program &p, const CFGraph &c,
     return dead;
 }
 
-static bool vn_copy(const Program &p, int i) {
-    if (p.op[i] != S().O_Mov) return false;
-    u64 q = p.q[i];
-    if (srcb_form(q) != FORM_REG) return false;
-    if (((q >> 39) & 0xF) != 0xF) return false;
-    if (((q >> 16) & 0xF) != 7) return false;
-    return (int)((q >> 20) & 0xFF) != RZ && (int)(q & 0xFF) != RZ;
+template <class I>
+static bool vn_copy(const ProgramT<I> &p, int i) {
+    int d, s;
+    if (!I::reg_move(p.q[i], p.op[i], &d, &s)) return false;
+    if (!I::guard_is_pt(p.q[i])) return false;
+    return is_gpr_key(s) && is_gpr_key(d);
 }
 
 struct VnGroup {
@@ -4780,17 +4779,19 @@ static int vn_live_gprs(const Mask &m) {
     return c;
 }
 
+template <class I>
 static bool vn_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
-                     VnStats &st, int span, bool &rejected) {
-    u32 co = const_off(ct);
+                     int span, bool &rejected) {
+    typedef typename I::Word Word;
+    u32 co = I::const_off(ct);
     if (co > bc.size()) fail("vn: ConstBufOffset past the file");
-    int n = 3 * ((int)co - INSTR_START) / 32;
+    int n = I::nslots(co);
     if (n <= 0) return false;
-    Program p;
+    ProgramT<I> p;
     p.load_bytes(bc, ct);
     if (dce2_reads_cc(p)) return false;
     int nreal = 0;
-    for (int k = 0; k < n && k < p.n; k++) if (p.q[k]) nreal = k + 1;
+    for (int k = 0; k < n && k < p.n; k++) if (!I::empty(p.q[k])) nreal = k + 1;
     if (nreal <= 0) return false;
     CFGraph c;
     c.build(p, false);
@@ -4802,13 +4803,13 @@ static bool vn_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
     std::vector<char> in_cycle;
     cycle_nodes(c, reach, nreal, in_cycle);
     std::vector<int> exit_live;
-    if (fragment) exit_live_regs(bc, exit_live);
+    if (fragment) I::exit_live_regs(bc, exit_live);
     std::vector<char> is_exit((size_t)RZ, 0);
     for (int r : exit_live) if (r >= 0 && r < RZ) is_exit[(size_t)r] = 1;
     Live L;
     liveness(p, c, reach, exit_live, L);
 
-    SplitMap SM;
+    SplitMapT<I> SM;
     Adj unused_adj;
     static std::vector<std::vector<int>> innode, outnode;
     if (!build_split(p, c, reach, L, exit_live, SM, unused_adj, false,
@@ -4827,15 +4828,15 @@ static bool vn_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
 
     std::vector<std::vector<Field>> fms((size_t)nreal);
     for (int i = 0; i < nreal; i++)
-        if (p.q[i] && reach[(size_t)i])
-            fieldmap(p.q[i], p.op[i], p.props[i], fms[(size_t)i]);
+        if (!I::empty(p.q[i]) && reach[(size_t)i])
+            I::fieldmap(p.q[i], p.op[i], p.props[i], fms[(size_t)i]);
 
     std::vector<char> used((size_t)RZ, 0);
     {
         std::vector<int> v;
         for (int i = 0; i < p.n; i++) {
-            if (!p.q[i]) continue;
-            RSet all = p.defs[i];
+            if (I::empty(p.q[i])) continue;
+            typename I::RSet all = p.defs[i];
             all.unite(p.maydefs[i]);
             all.unite(p.uses[i]);
             all.list(v);
@@ -4850,7 +4851,7 @@ static bool vn_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
 
     std::unordered_map<int, int> ndef;
     for (int i = 0; i < nreal; i++) {
-        if (!p.q[i] || !reach[(size_t)i]) continue;
+        if (I::empty(p.q[i]) || !reach[(size_t)i]) continue;
         for (const Field &f : fms[(size_t)i]) {
             if (f.kind != 'd') continue;
             for (int k = 0; k < f.w; k++) {
@@ -4877,10 +4878,8 @@ static bool vn_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
         key.clear();
         long long x;
         auto push = [&](long long y) { x = y; key.append((const char *)&x, sizeof x); };
-        u64 mask = 0;
-        for (const Field &f : fms[(size_t)i]) mask |= (u64)0xFF << f.off;
         push(p.op[i]);
-        push((long long)(p.q[i] & ~mask));
+        I::field_free_key(key, p.q[i], fms[(size_t)i]);
         for (const Field &f : fms[(size_t)i]) {
             push(((long long)f.off << 16) | ((long long)f.w << 8) | (long long)f.kind);
             if (f.kind == 'd') continue;
@@ -4899,9 +4898,8 @@ static bool vn_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
     std::unordered_map<long long, int> gidof;
     std::unordered_map<int, long long> gpos;
     std::unordered_map<std::string, std::vector<int>> table;
-    int nmatch = 0;
     for (int i = 0; i < nreal; i++) {
-        if (!p.q[i] || !reach[(size_t)i]) continue;
+        if (I::empty(p.q[i]) || !reach[(size_t)i]) continue;
         bool ok = !in_cycle[(size_t)i] && vn_cse_op(p, i);
         if (ok)
             for (const Field &f : fms[(size_t)i]) {
@@ -4913,7 +4911,7 @@ static bool vn_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
                 if (!ok) break;
             }
         int m = -1, seen = -1;
-        const bool iscopy = p.q[i] && reach[(size_t)i] && vn_copy(p, i);
+        const bool iscopy = !I::empty(p.q[i]) && reach[(size_t)i] && vn_copy(p, i);
         if (ok) {
             build_key(i);
             std::vector<int> &cand = table[key];
@@ -4931,8 +4929,10 @@ static bool vn_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
             if (f.kind != 'd') continue;
             if (iscopy) {
                 int nd = nout(f.base, i);
+                int cd = 0, cs = 0;
+                I::reg_move(p.q[i], p.op[i], &cd, &cs);
                 if (nd >= 0 && ndef[nd] == 1)
-                    vnum[nd] = vnof(nin((int)((p.q[i] >> 20) & 0xFF), i));
+                    vnum[nd] = vnof(nin(cs, i));
             } else if (m < 0) {
                 for (int k = 0; k < f.w; k++) {
                     int nd = nout(f.base + k, i);
@@ -4974,7 +4974,6 @@ static bool vn_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
                 gpos[nd] = (long long)gid * 8 + k;
             }
         }
-        if (m >= 0) nmatch++;
     }
     if (gpos.empty()) return false;
 
@@ -4982,7 +4981,7 @@ static bool vn_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
     for (size_t pass = 0; pass <= gr.size() + 1; pass++) {
         bool ch = false;
         for (int u = 0; u < nreal; u++) {
-            if (!p.q[u] || !reach[(size_t)u]) continue;
+            if (I::empty(p.q[u]) || !reach[(size_t)u]) continue;
             for (const Field &f : fms[(size_t)u]) {
                 if (f.kind == 'd') continue;
                 int g0 = -1, k0 = -1, nfound = 0;
@@ -5011,7 +5010,7 @@ static bool vn_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
         if (pass == gr.size() + 1) return false;
     }
 
-    int nfresh = 0, ngroup = 0;
+    int ngroup = 0;
     {
         int next_free = 0;
         for (size_t g = 0; g < gr.size(); g++) {
@@ -5027,18 +5026,16 @@ static bool vn_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
             gr[g].fresh = base;
             for (int k = 0; k < w; k++) used[(size_t)(base + k)] = 1;
             next_free = base + w;
-            nfresh += w;
             ngroup++;
         }
     }
     if (!ngroup) return false;
 
-    std::vector<u64> words((size_t)nreal);
-    for (int k = 0; k < nreal; k++)
-        std::memcpy(&words[(size_t)k], bc.data() + slot_off(k), 8);
+    std::vector<Word> words((size_t)nreal);
+    for (int k = 0; k < nreal; k++) words[(size_t)k] = I::read_word(bc, k);
     int moved = 0;
     for (int u = 0; u < nreal; u++) {
-        if (!p.q[u] || !reach[(size_t)u]) continue;
+        if (I::empty(p.q[u]) || !reach[(size_t)u]) continue;
         for (const Field &f : fms[(size_t)u]) {
             int g0 = -1, k0 = -1;
             if (f.kind == 'd') {
@@ -5060,17 +5057,15 @@ static bool vn_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
                 }
                 if (g0 < 0 || k0 < 0 || k0 + f.w > gr[(size_t)g0].w) continue;
             }
-            words[(size_t)u] = setbits(words[(size_t)u], f.off, 8,
-                                       (u64)(gr[(size_t)g0].fresh + k0));
+            I::set_field(words[(size_t)u], f.off, gr[(size_t)g0].fresh + k0);
             moved++;
         }
     }
     if (!moved) return false;
 
     std::vector<u8> nbc = bc;
-    for (int k = 0; k < nreal; k++)
-        std::memcpy(nbc.data() + slot_off(k), &words[(size_t)k], 8);
-    Program p2;
+    for (int k = 0; k < nreal; k++) I::write_word(nbc, k, words[(size_t)k]);
+    ProgramT<I> p2;
     p2.load_bytes(nbc, ct);
     CFGraph c2;
     c2.build(p2, false);
@@ -5079,9 +5074,8 @@ static bool vn_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
     int dead = vn_dead_sweep(p2, c2, reach2, exit_live, killed);
     if (!dead) return false;
 
-    size_t blobsz = bc.size() - (size_t)co;
     std::vector<int> newidx((size_t)nreal + 1, -1), nextkept((size_t)nreal + 1, -1);
-    std::vector<u64> out;
+    std::vector<Word> out;
     std::vector<int> oldof;
     for (int k = 0; k < nreal; k++) {
         if (k < p2.n && killed[(size_t)k]) continue;
@@ -5095,42 +5089,16 @@ static bool vn_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
           if (k < nreal && newidx[(size_t)k] >= 0) nk = newidx[(size_t)k];
           nextkept[(size_t)k] = nk;
       } }
-    while (out.size() % 3) { out.push_back(DCE2_W_NOP); oldof.push_back(-1); }
-    for (size_t k = 0; k < oldof.size(); k++) {
-        int i2 = oldof[k];
-        if (i2 < 0 || i2 >= p2.n || !p2.q[i2]) continue;
-        if (!S().branchy_imm[(size_t)p2.op[i2]]) continue;
-        int t = p2.target(i2);
-        if (t < 0 || t > nreal) fail("vn: unresolved branch at slot %d", i2);
-        int nt = nextkept[(size_t)t];
-        int disp = slot_rel(nt) - (slot_rel((int)k) + 8);
-        if (!branch_disp_ok(disp)) fail("vn: branch displacement out of range");
-        out[k] = setbits(out[k], 20, 24, (u64)(u32)disp & 0xFFFFFF);
-    }
-    size_t nb = out.size() / 3;
-    u32 co2 = (u32)(INSTR_START + nb * 32);
-    co2 = (co2 + CBUF_ALIGN - 1) / CBUF_ALIGN * CBUF_ALIGN;
-    std::vector<u8> obc((size_t)co2 + blobsz, 0);
-    std::memcpy(obc.data(), bc.data(), INSTR_START);
-    for (size_t k = 0; k < out.size(); k++)
-        std::memcpy(obc.data() + slot_off(k), &out[k], 8);
-    if (blobsz) std::memcpy(obc.data() + co2, bc.data() + co, blobsz);
-    std::vector<u8> oct = ct;
-    NVNshaderControl *oc = ctl(oct);
-    oc->mProgramSize = (u32)(SPH_SIZE + nb * 32);
-    oc->mConstBufOffset = co2;
-    oc->mShaderSize = (u32)obc.size();
-    phase_b(obc, co2);
-    int ns = 3 * ((int)co2 - INSTR_START) / 32;
-    if (!slots_ok(ns)) fail("vn: padded instruction count %d is not 12 mod 24", ns);
+    std::vector<u8> obc, oct = ct;
+    u32 co2 = stream_rebuild(p2, bc, co, out, oldof, nextkept, nreal, "vn", true, obc, oct);
 
-    int cyc0 = issue_cycles(bc, co), cyc1 = issue_cycles(obc, co2);
+    int cyc0 = I::issue_cycles(bc, co), cyc1 = I::issue_cycles(obc, co2);
     int ml0 = 0, ml1 = 0;
     for (int i = 0; i < nreal; i++)
-        if (p.q[i] && reach[(size_t)i])
+        if (!I::empty(p.q[i]) && reach[(size_t)i])
             ml0 = std::max(ml0, vn_live_gprs(L.live[(size_t)i]));
     {
-        Program p3;
+        ProgramT<I> p3;
         p3.load_bytes(obc, oct);
         CFGraph c3;
         c3.build(p3, false);
@@ -5138,12 +5106,12 @@ static bool vn_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
         Live L3;
         liveness(p3, c3, r3, exit_live, L3);
         for (int i = 0; i < p3.n; i++)
-            if (p3.q[i] && r3[(size_t)i])
+            if (!I::empty(p3.q[i]) && r3[(size_t)i])
                 ml1 = std::max(ml1, vn_live_gprs(L3.live[(size_t)i]));
     }
 
     {
-        Program p4;
+        ProgramT<I> p4;
         p4.load_bytes(obc, oct);
         CFGraph c4;
         c4.build(p4, false);
@@ -5151,36 +5119,30 @@ static bool vn_round(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
         Mask ent;
         live_entry(p4, c4, r4, ent);
         if (ent.any()) {
-            st.reverted++; g_vn_rev++; rejected = true; return false;
+            rejected = true; return false;
         }
     }
     bool keep = cyc1 <= cyc0;
     if (!keep) {
-        st.reverted++; g_vn_rev++; rejected = true; return false;
+        rejected = true; return false;
     }
 
-    st.merged += nmatch;
-    st.moved += moved;
-    st.deleted += dead;
-    st.groups += ngroup;
-    g_vn_merged += nmatch;
-    g_vn_deleted += dead;
-    g_vn_groups += ngroup;
     bc.swap(obc);
     ct.swap(oct);
     return true;
 }
 
+template <class I>
 void vn_cse(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
             VnStats &st, int reach) {
     if (!g_vn) return;
-    g_vn_calls++;
     for (int r = 0; r < 8; r++) {
         bool rejected = false;
-        if (!vn_round(bc, ct, fragment, st, reach, rejected)) break;
+        if (!vn_round<I>(bc, ct, fragment, reach, rejected)) break;
         st.rounds++;
-        g_vn_rounds++;
     }
 }
+template void vn_cse<Sm50>(std::vector<u8> &, std::vector<u8> &, bool, VnStats &, int);
+template void vn_cse<Sm86>(std::vector<u8> &, std::vector<u8> &, bool, VnStats &, int);
 
 }

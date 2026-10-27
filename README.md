@@ -1,15 +1,15 @@
 # UberSlicer
 
-NW ubershader specialisation pipeline: option vector in, a specialised NVN
+NW ubershader specialisation pipeline: option vector in, a specialised NVN/NVN2
 `_bytecode.bin` + `_control.bin` out (spliced from the debug ubershader binary).
-The bundling part is/will be available at [HoianViewer](https://github.com/nvnprogram/HoianViewer).
-Only tested on Splatoon 3, other games may break(if they do work but you see
-artifacts, likely scheduling issue. If you were interested in getting it to work on
-another game that has debug ubershader bins and its broken, you can
+The bundling part is available at [HoianViewer](https://github.com/nvnprogram/HoianViewer).
+Only tested on Splatoon 3 and Splatoon Raiders, other games may break(if they do work 
+but you see artifacts, likely scheduling issue. If you were interested in getting it 
+to work on another game that has debug ubershader bins and its broken, you can
 contact me on discord @nvnprogram).
 
-On my benchmarks, this should achieve approximately 1.1x the instructions count of a stock variation, and roughly 1.25x expected cycles.
-(Versus ~25x instructions count and probably some absurdly high cyclesX number on base uber; if you dont get the context higher means worse)
+On my benchmarks, this should achieve approximately 1.1x the instructions count of a stock variation, and is roughly 1.2x slower than an equivalent stock variation.
+(Which is obviously much better than an ubershader, which has at least 25x instrs)
 
 ## Build
 

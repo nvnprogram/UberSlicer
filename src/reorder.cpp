@@ -1,6 +1,6 @@
 
 #include "emit.h"
-#include "nv_sched_ctl.h"
+#include "sm50/nv_sched_ctl.h"
 
 extern "C" {
 int uber_phase_a(const unsigned char *bc, unsigned int constOff, int nreal,
@@ -9,20 +9,7 @@ int uber_phase_a(const unsigned char *bc, unsigned int constOff, int nreal,
 int uber_fill_bubbles(const unsigned char *bc, unsigned int constOff, int nreal,
                       int *perm, unsigned char *leader, int *nslots, int memdeps,
                       const unsigned char *pdefs, const unsigned char *puses);
-int uber_hoist_ll(const unsigned char *bc, unsigned int constOff, int nreal,
-                  int *perm, unsigned char *leader, int *nslots, int memdeps,
-                  const unsigned char *pdefs, const unsigned char *puses);
 
-void ub_set_webs(const int *wuse, const int *wdef, int stride);
-void ub_fe_reset(void);
-void ub_fe_get(long long *seen, long long *fals);
-void ub_fe_cls_get(long long *cls);
-void ub_fe_renames_get(long long *v);
-void ub_fe_crossed_get(long long *defs, long long *edges);
-void ub_cp_reset(void);
-void ub_cp_get(long long *all, long long *nofalse);
-extern int _ub_nofalse;
-extern int _ub_docp;
 }
 
 namespace ub {
@@ -204,8 +191,6 @@ bool gate_memorder(const std::vector<u8> &pre_bc, const std::vector<u8> &pre_ct,
     return true;
 }
 
-bool g_reorder_report_only = false;
-
 void pred_masks(const Program &p, int n, std::vector<u8> &pdefs,
                 std::vector<u8> &puses) {
     pdefs.assign((size_t)n, 0);
@@ -261,15 +246,7 @@ int issue_cycles(const std::vector<u8> &bc, u32 co) {
     return total;
 }
 
-bool g_presched_probe = false;
-int g_presched_drop = 0;
-bool g_stage_fragment = true;
-FEStats g_fe;
-
-bool g_fe_locked = false;
-
-void reorder(std::vector<u8> &bc, std::vector<u8> &ct, ReorderStats &st,
-             bool memdeps) {
+void reorder(std::vector<u8> &bc, std::vector<u8> &ct, bool memdeps) {
     u32 co = const_off(ct);
     if (co > bc.size()) fail("reorder: ConstBufOffset past the file");
     int n = 3 * ((int)co - INSTR_START) / 32;
@@ -288,118 +265,51 @@ void reorder(std::vector<u8> &bc, std::vector<u8> &ct, ReorderStats &st,
     std::vector<u8> pdefs, puses;
     pred_masks(p, n, pdefs, puses);
 
-    bool want_webs = g_presched_drop || (g_presched_probe && !g_fe_locked);
-    std::vector<int> wuse, wdef;
-    if (want_webs) {
-        int wn = 0;
-        web_map(pre_bc, ct, g_stage_fragment, wuse, wdef, wn);
-        if (wn != n) fail("reorder: web map slot count %d != %d", wn, n);
-        ub_fe_reset();
-        ub_cp_reset();
-        _ub_nofalse = g_presched_drop;
-        _ub_docp = g_presched_drop ? 0 : 1;
-        ub_set_webs(wuse.data(), wdef.data(), WEB_STRIDE);
-    }
-
     std::vector<int> perm((size_t)n);
     std::vector<u8> leader((size_t)n);
     int nslots = 0;
     int moved = uber_phase_a(bc.data(), co, nreal, perm.data(), leader.data(),
                              &nslots, memdeps ? 1 : 0, pdefs.data(),
                              puses.data());
-    if (want_webs) {
-        long long seen[3], fals[3], cpa = 0, cpn = 0, cls[8], ren = 0;
-        long long crd = 0, cre = 0;
-        ub_fe_get(seen, fals);
-        ub_fe_cls_get(cls);
-        ub_fe_renames_get(&ren);
-        ub_fe_crossed_get(&crd, &cre);
-        ub_cp_get(&cpa, &cpn);
-        if (!g_fe_locked) {
-            for (int k = 0; k < 3; k++) { g_fe.seen[k] += seen[k]; g_fe.fals[k] += fals[k]; }
-            for (int k = 0; k < 8; k++) g_fe.cls[k] += cls[k];
-            g_fe.renames += ren;
-            g_fe.crossed += crd;
-            g_fe.crossed_edges += cre;
-            g_fe.cp_all += cpa;
-            g_fe.cp_nofalse += cpn;
-            g_fe_locked = true;
-        }
-        ub_set_webs(nullptr, nullptr, 0);
-        _ub_nofalse = 0;
-    }
     if (moved < 0) fail("reorder: phase A failed");
     if (nslots != n) fail("reorder: phase A slot count %d != %d", nslots, n);
 
     apply_perm(bc, p, co, n, perm, leader, "reorder");
 
     std::string d;
-    if (!gate_memorder(pre_bc, ct, bc, ct, d)) {
-        if (!g_reorder_report_only)
-            fail("reorder: V11 memory order violated -- %s", d.c_str());
-        st.v11_violations = 1;
-    }
-
-    st.moved = moved;
-    st.slots = n;
-    st.memops = (int)([&] {
-        std::vector<MemOp> v;
-        mem_sequence(bc, ct, v);
-        return v.size();
-    }());
+    if (!gate_memorder(pre_bc, ct, bc, ct, d))
+        fail("reorder: V11 memory order violated -- %s", d.c_str());
 }
-
 
 struct FillEntry {
     std::vector<u8> bc;
-    int before = 0, after = 0, moved = 0, rounds = 0, v11 = 0;
 };
 static std::map<std::string, FillEntry> g_fill_cache;
 void fill_cache_clear() { g_fill_cache.clear(); }
 
 static void fill_bubbles_uncached(std::vector<u8> &bc, std::vector<u8> &ct,
-                                  ReorderStats &st, bool memdeps, int rounds);
+                                  bool memdeps, int rounds);
 
-void fill_bubbles(std::vector<u8> &bc, std::vector<u8> &ct, ReorderStats &st,
-                  bool memdeps, int rounds) {
+void fill_bubbles(std::vector<u8> &bc, std::vector<u8> &ct, bool memdeps, int rounds) {
     std::string key;
     key.reserve(bc.size() + ct.size() + 8);
     key.push_back(memdeps ? 'M' : 'm');
     key.push_back((char)(rounds & 0x7F));
     key.append((const char *)bc.data(), bc.size());
     key.append((const char *)ct.data(), ct.size());
-    g_perf.n_fill++;
     auto it = g_fill_cache.find(key);
     if (it != g_fill_cache.end()) {
-        g_perf.n_fill_hit++;
         bc = it->second.bc;
-        st.fill_before = it->second.before;
-        st.fill_after = it->second.after;
-        st.fill_moved += it->second.moved;
-        st.fill_rounds = it->second.rounds;
-        st.v11_violations |= it->second.v11;
         return;
     }
-    ReorderStats probe;
-    probe.fill_moved = 0;
-    fill_bubbles_uncached(bc, ct, probe, memdeps, rounds);
+    fill_bubbles_uncached(bc, ct, memdeps, rounds);
     FillEntry e;
     e.bc = bc;
-    e.before = probe.fill_before;
-    e.after = probe.fill_after;
-    e.moved = probe.fill_moved;
-    e.rounds = probe.fill_rounds;
-    e.v11 = probe.v11_violations;
     g_fill_cache.emplace(std::move(key), std::move(e));
-    st.fill_before = e.before;
-    st.fill_after = e.after;
-    st.fill_moved += e.moved;
-    st.fill_rounds = e.rounds;
-    st.v11_violations |= e.v11;
 }
 
 static void fill_bubbles_uncached(std::vector<u8> &bc, std::vector<u8> &ct,
-                                  ReorderStats &st, bool memdeps, int rounds) {
+                                  bool memdeps, int rounds) {
     u32 co = const_off(ct);
     if (co > bc.size()) fail("fill: ConstBufOffset past the file");
     int n = 3 * ((int)co - INSTR_START) / 32;
@@ -407,7 +317,6 @@ static void fill_bubbles_uncached(std::vector<u8> &bc, std::vector<u8> &ct,
 
     std::vector<u8> pre_bc = bc;
     int best = issue_cycles(bc, co);
-    st.fill_before = best;
 
     for (int r = 0; r < rounds; r++) {
         std::vector<u8> trial = bc;
@@ -437,18 +346,11 @@ static void fill_bubbles_uncached(std::vector<u8> &bc, std::vector<u8> &ct,
         if (now >= best) break;
         best = now;
         bc.swap(trial);
-        st.fill_moved += moved;
-        st.fill_rounds = r + 1;
     }
-    st.fill_after = best;
 
     std::string d;
-    if (!gate_memorder(pre_bc, ct, bc, ct, d)) {
-        if (!g_reorder_report_only)
-            fail("fill: V11 memory order violated -- %s", d.c_str());
-        st.v11_violations = 1;
-    }
+    if (!gate_memorder(pre_bc, ct, bc, ct, d))
+        fail("fill: V11 memory order violated -- %s", d.c_str());
 }
-
 
 }

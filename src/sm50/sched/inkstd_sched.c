@@ -4866,7 +4866,6 @@ static int _pa_ccp = 1;
 
 static int _pa_ktt = 0;
 static int _pa_esc = 1;
-static int _pa_anti = 0;
 static int _pa_texclamp = 1;
 static int _pa_noguard = 0;
 static int _pa_suses = 1;
@@ -5087,7 +5086,6 @@ static void pa_calc_info_for_block(PAB *B) {
             int to = B->dep[i].d[k].to, ty = B->dep[i].d[k].type, tt;
             if (ty == PBD_FLOW)        tt = s[to].distance + pb_lat_flow(ip, &B->blk[to]);
             else if (ty == PBD_OUTPUT) tt = s[to].distance + pb_lat_output(ip, &B->blk[to]);
-            else if (_pa_anti)         tt = s[to].distance + pb_lat_anti(ip, &B->blk[to]);
             else                       tt = s[to].distance + 1;
 
             if (_pa_ktt && _pa_texclamp && s[to].isTex && tt <= B->nextTexDistance)

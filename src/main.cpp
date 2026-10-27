@@ -2,7 +2,7 @@
 #include <exception>
 #include <numeric>
 #include "emit.h"
-#include "nv_sched_ctl.h"
+#include "sm50/nv_sched_ctl.h"
 
 #include "json.hpp"
 #include <cctype>
@@ -49,9 +49,6 @@ static bool exists(const std::string &p) {
     return stat(p.c_str(), &st) == 0;
 }
 
-
-
-
 struct OptionRec {
     std::string name;
     std::vector<std::string> choice_names;
@@ -59,7 +56,6 @@ struct OptionRec {
 };
 
 struct DataSet {
-    std::string root;
     std::string table_path;
     std::vector<OptionRec> options;
     std::map<std::string, size_t> by_name;
@@ -69,8 +65,7 @@ struct DataSet {
     std::vector<std::string> option_order;
     std::map<std::string, size_t> oidx;
 
-    void load(const std::string &r, const std::string &tablePath) {
-        root = r;
+    void load(const std::string &tablePath) {
         table_path = tablePath;
 
         if (table_path.empty()) fail("--options-table is required");
@@ -130,12 +125,9 @@ struct DataSet {
 
 };
 
-
-
-
-struct UberCtx {
-    Program prog;
-    Spec sp;
+template <class I> struct UberCtxT {
+    ProgramT<I> prog;
+    SpecT<I> sp;
 };
 
 static bool g_reorder = false;
@@ -143,18 +135,9 @@ static bool g_reorder2 = false;
 static bool g_texsb = false;
 static bool g_fill = false;
 static int  g_fill_rounds = 8;
-static bool g_pa_anti = false;
-static bool g_reorder_nomem = false;
 static bool g_cbfold = false;
 
-extern "C" void uber_set_pa_anti(int v);
-extern "C" int ubf_pick_last;
-extern "C" int ubh_class;
-extern "C" int ubh_thresh;
-extern "C" int ubh_cap;
-extern "C" int ubh_latency;
-
-static std::map<std::string, UberCtx *> g_ctx;
+template <class I> static std::map<std::string, UberCtxT<I> *> g_ctx;
 
 struct UberInputs {
     std::map<std::string, std::string> bc, ct;
@@ -212,7 +195,16 @@ static bool uber_stage_of(const std::string &bcp) {
     static std::map<std::string, bool> memo;
     auto it = memo.find(bcp);
     if (it != memo.end()) return it->second;
-    bool f = bytecode_is_fragment(read_file(bcp), bcp.c_str());
+    std::vector<u8> bc = read_file(bcp);
+    u32 magic = 0;
+    if (bc.size() >= 4) std::memcpy(&magic, bc.data(), 4);
+    bool f;
+    if (magic == NVN_PROGRAM_MAGIC) {
+        f = bytecode_is_fragment(bc, bcp.c_str());
+    } else {
+        if (bc.size() < 4) fail("%s: too short for an NVN2 shader header", bcp.c_str());
+        f = (bc[0] & 0x1f) == 2;
+    }
     memo[bcp] = f;
     return f;
 }
@@ -236,7 +228,6 @@ static void uber_arg(std::vector<UberArg> &v, const std::string &spec,
     } else a.path = spec;
     v.push_back(a);
 }
-
 
 static void resolve_uber_args(const std::vector<UberArg> &v) {
     for (const UberArg &a : v) {
@@ -273,6 +264,116 @@ static void resolve_uber_args(const std::vector<UberArg> &v) {
     }
 }
 
+enum class IsaId { None, Sm50, Sm86 };
+
+struct InputIsa {
+    IsaId id = IsaId::None;
+    std::string path;
+    std::string what;
+};
+
+static const char *isa_gen(IsaId k) { return k == IsaId::Sm50 ? "NVN1" : "NVN2"; }
+
+static IsaId parse_mode(const std::string &s) {
+    if (s == "nvn") return IsaId::Sm50;
+    if (s == "nvn2") return IsaId::Sm86;
+    fail("--mode %s: expected nvn or nvn2", s.c_str());
+}
+
+static void reject_container(const std::vector<u8> &b, const std::string &path) {
+    if (b.size() < 12) return;
+    const char *kind = !std::memcmp(b.data(), "FSHA", 4)   ? "bfsha"
+                       : !std::memcmp(b.data(), "BNSH", 4) ? "BNSH"
+                                                           : nullptr;
+    if (kind)
+        fail("%s is a %s container, version %u.%u.%u, not one stage program: "
+             "pass the stage's _bytecode.bin and _control.bin", path.c_str(), kind,
+             (unsigned)(b[10] | b[11] << 8), (unsigned)b[9], (unsigned)b[8]);
+}
+
+static InputIsa read_isa(const std::string &bcp, const std::string &ctp) {
+    InputIsa k;
+    k.path = ctp;
+    if (!exists(ctp)) {
+        k.what = "it does not exist";
+        return k;
+    }
+    std::vector<u8> ct = read_file(ctp);
+    reject_container(ct, ctp);
+    u32 magic = 0, major = 0, minor = 0;
+    uint16_t arch = 0;
+    if (ct.size() >= 4) std::memcpy(&magic, ct.data(), 4);
+    char buf[256];
+    if (ct.size() < 16 || magic != NVN_CONTROL_MAGIC) {
+        snprintf(buf, sizeof buf, "%zu bytes opening with %08x, where a control "
+                 "section opens with %08x", ct.size(), magic, NVN_CONTROL_MAGIC);
+        k.what = buf;
+        return k;
+    }
+    std::memcpy(&major, ct.data() + 4, 4);
+    std::memcpy(&minor, ct.data() + 8, 4);
+    std::memcpy(&arch, ct.data() + 12, 2);
+    snprintf(buf, sizeof buf, "control version %u.%u, architecture 0x%x", major,
+             minor, (unsigned)arch);
+    k.what = buf;
+    if (major == 1 && arch == 0x120) k.id = IsaId::Sm50;
+    else if ((major == 200 || major == 201) && arch == 0x170) k.id = IsaId::Sm86;
+    if (k.id == IsaId::Sm86 && exists(bcp)) {
+        std::vector<u8> bc = read_file(bcp);
+        reject_container(bc, bcp);
+        u32 pm = 0;
+        if (bc.size() >= 4) std::memcpy(&pm, bc.data(), 4);
+        if (pm == NVN_PROGRAM_MAGIC)
+            fail("%s is NVN2 (%s) but %s opens with the NVN1 program magic %08x: "
+                 "they are not one program", ctp.c_str(), k.what.c_str(),
+                 bcp.c_str(), pm);
+    }
+    return k;
+}
+
+static IsaId detect_isa(const std::string &bcp, const std::string &ctp, IsaId mode) {
+    const InputIsa k = read_isa(bcp, ctp);
+    if (k.id != IsaId::None) {
+        if (mode != IsaId::None && mode != k.id)
+            fail("--mode %s, but %s is an %s program (%s)",
+                 mode == IsaId::Sm50 ? "nvn" : "nvn2", k.path.c_str(),
+                 isa_gen(k.id), k.what.c_str());
+        return k.id;
+    }
+    if (mode != IsaId::None) return mode;
+    fail("cannot tell which GPU %s is for (%s); pass --mode nvn or --mode nvn2",
+         k.path.c_str(), k.what.c_str());
+}
+
+[[noreturn]] static void nvn2_missing(const std::string &path) {
+    fail("NVN2 backend not implemented yet: %s is for NVN2", path.c_str());
+}
+
+static IsaId uber_isa(const std::vector<UberArg> &v, IsaId mode, std::string &where) {
+    IsaId got = IsaId::None;
+    for (const UberArg &a : v) {
+        if (a.control || !exists(a.path)) continue;
+        std::string ctp;
+        for (const UberArg &c : v)
+            if (c.control && c.key == a.key &&
+                (c.stage < 0 || a.stage < 0 || c.stage == a.stage)) {
+                ctp = c.path;
+                break;
+            }
+        if (ctp.empty()) ctp = control_sibling(a.path);
+        IsaId k = detect_isa(a.path, ctp, mode);
+        if (got != IsaId::None && k != got)
+            fail("%s is for %s and %s is for %s: one run is for one GPU",
+                 where.c_str(), isa_gen(got), a.path.c_str(), isa_gen(k));
+        if (got == IsaId::None) { got = k; where = a.path; }
+    }
+    return got;
+}
+
+static void program_isa(const std::string &bcp, const std::string &ctp, IsaId mode) {
+    if (detect_isa(bcp, ctp, mode) == IsaId::Sm86) nvn2_missing(bcp);
+}
+
 static bool stage_is_fragment(const std::string &s) {
     if (s == "fragment") return true;
     if (s == "vertex") return false;
@@ -287,8 +388,9 @@ static bool check_stage(const std::string &s) {
     return f;
 }
 
-static UberCtx *get_ctx(DataSet &D, bool fragment, const std::string &uber_key,
-                        bool redundancy) {
+template <class I>
+static UberCtxT<I> *get_ctx(DataSet &D, bool fragment, const std::string &uber_key,
+                            bool redundancy) {
     (void)D;
     std::string bcp, ctp;
     uber_paths(fragment, uber_key, bcp, ctp);
@@ -296,59 +398,58 @@ static UberCtx *get_ctx(DataSet &D, bool fragment, const std::string &uber_key,
     std::string key = (fragment ? "F:" : "V:") + bcp + "|" + ctp +
                       (redundancy ? ":6" : ":5") + (g_cbfold ? ":cb" : "") +
                       (g_cse_mov32i ? ":cse" : "");
-    auto it = g_ctx.find(key);
-    if (it != g_ctx.end()) return it->second;
-    UberCtx *c = new UberCtx();
+    auto it = g_ctx<I>.find(key);
+    if (it != g_ctx<I>.end()) return it->second;
+    UberCtxT<I> *c = new UberCtxT<I>();
     c->prog.load_paths(bcp, ctp);
 
     std::vector<int> exit_live;
-    if (fragment) exit_live_regs(c->prog.bc, exit_live);
+    if (fragment) I::exit_live_regs(c->prog.bc, exit_live);
 
     int folds = redundancy ? FOLD_ALL : 0;
     c->sp.init(c->prog, uber_bank(fragment), exit_live,
                  true,   g_cbfold, folds,
                  redundancy);
-    g_ctx[key] = c;
+    g_ctx<I>[key] = c;
     return c;
 }
 
-static void option_slots_read(const Program &p, int bank, std::set<int> &out) {
+template <class I>
+static void option_slots_read(const ProgramT<I> &p, int bank, std::set<int> &out) {
     for (int i = 0; i < p.n; i++) {
-        u64 q = p.q[i];
-        if (!q) continue;
+        typename I::Word q = p.q[i];
+        if (I::empty(q)) continue;
         int b, o;
 
-        if (cbuf_read_of(q, p.op[i], &b, &o) && b == bank) out.insert(o >> 2);
+        if (I::cbuf_read(q, p.op[i], &b, &o) && b == bank) out.insert(o >> 2);
     }
 }
 
-static std::map<std::string, std::set<int>> g_slots_read;
+template <class I> static std::map<std::string, std::set<int>> g_slots_read;
+template <class I = Sm50>
 static const std::set<int> &uber_slots_read(bool fragment,
                                             const std::string &key) {
     std::string bcp, ctp;
     uber_paths(fragment, key, bcp, ctp);
-    auto it = g_slots_read.find(bcp);
-    if (it != g_slots_read.end()) return it->second;
-    Program p;
+    auto it = g_slots_read<I>.find(bcp);
+    if (it != g_slots_read<I>.end()) return it->second;
+    ProgramT<I> p;
     p.load_paths(bcp, ctp);
     std::set<int> s;
     option_slots_read(p, uber_bank(fragment), s);
-    return g_slots_read.emplace(bcp, std::move(s)).first->second;
+    return g_slots_read<I>.emplace(bcp, std::move(s)).first->second;
 }
 
 enum OptionReach { REACH_OK = 0, REACH_NO_SLOT, REACH_UNREAD };
 
+template <class I = Sm50>
 static OptionReach option_reach(const DataSet &D, bool fragment,
                                 const std::string &key, const std::string &nm) {
     auto sit = D.c6_slot.find(nm);
     if (sit == D.c6_slot.end()) return REACH_NO_SLOT;
-    return uber_slots_read(fragment, key).count(sit->second) ? REACH_OK
+    return uber_slots_read<I>(fragment, key).count(sit->second) ? REACH_OK
                                                             : REACH_UNREAD;
 }
-
-
-
-
 
 static bool g_quick = false;
 
@@ -357,8 +458,6 @@ struct Composed {
     EmitStats st;
     RegStats rst;
     CtlFacts facts;
-    ReorderStats ro;
-    Dce2Stats dce;
     TexNarrowStats tn;
     AnticopyStats ac;
     SinkStats sk;
@@ -369,26 +468,24 @@ struct Composed {
     bool occ_floored = false;
 };
 
-
+template <class I>
 static void compose_tail(bool fragment, Composed &out, int need_warps = 0);
 
 struct TailEntry {
     Composed c;
-    long long d[TAIL_NCTR];
 };
-static std::map<std::string, TailEntry> g_tail_cache;
-static void tail_cache_clear() { g_tail_cache.clear(); }
+template <class I> static std::map<std::string, TailEntry> g_tail_cache;
+template <class I> static void tail_cache_clear() { g_tail_cache<I>.clear(); }
 
+template <class I>
 static void compose_one_tail(bool fragment, Composed &out);
 
+template <class I>
 static void compose_one(DataSet &D, bool fragment, const std::string &uber_key,
                         const std::vector<u32> &c6, const std::string &name,
                         Composed &out) {
-    UberCtx *c = get_ctx(D, fragment, uber_key, true);
-    g_perf.n_compose++;
-    g_stage_fragment = fragment;
-    { PerfScope ps_(&g_perf.y[2]); g_perf.yn[2]++;
-      emit(c->prog, c->sp, c6, name, out.st); }
+    UberCtxT<I> *c = get_ctx<I>(D, fragment, uber_key, true);
+    emit(c->prog, c->sp, c6, name, out.st);
     out.bc = out.st.bc;
     out.ct = out.st.ct;
 
@@ -397,26 +494,20 @@ static void compose_one(DataSet &D, bool fragment, const std::string &uber_key,
     key.push_back(fragment ? 'F' : 'V');
     key.append((const char *)out.bc.data(), out.bc.size());
     key.append((const char *)out.ct.data(), out.ct.size());
-    auto tit = g_tail_cache.find(key);
-    if (tit != g_tail_cache.end()) {
-        g_perf.yn[5]++;
+    auto tit = g_tail_cache<I>.find(key);
+    if (tit != g_tail_cache<I>.end()) {
         EmitStats keep = std::move(out.st);
         out = tit->second.c;
         out.st = std::move(keep);
-        tail_counters_add(tit->second.d);
         return;
     }
-    long long tc0[TAIL_NCTR];
-    tail_counters(tc0);
-    compose_one_tail(fragment, out);
+    compose_one_tail<I>(fragment, out);
     TailEntry e;
-    tail_counters(e.d);
-    for (int i = 0; i < TAIL_NCTR; i++) e.d[i] -= tc0[i];
     EmitStats keep = std::move(out.st);
     out.st = EmitStats();
     e.c = out;
     out.st = std::move(keep);
-    g_tail_cache.emplace(std::move(key), std::move(e));
+    g_tail_cache<I>.emplace(std::move(key), std::move(e));
 }
 
 static const int VN_REACH[] = {1 << 30, 128, 16};
@@ -425,45 +516,41 @@ static int g_vn_row = -2;
 
 static bool g_vn_inline = false;
 
+template <class I>
 static void compose_one_tail(bool fragment, Composed &out) {
 
     bool have_ref = false;
     Composed ref;
     if (g_vn && (g_vn_inline || g_vn_row >= 0)) {
-        PerfScope ps_(&g_perf.y[6]); g_perf.yn[6]++;
-        vn_cse(out.bc, out.ct, fragment, out.vn,
+        vn_cse<I>(out.bc, out.ct, fragment, out.vn,
                VN_REACH[g_vn_inline ? 0 : g_vn_row]);
     } else if (g_vn && g_vn_row == -2) {
         Composed base;
         bool base_done = false;
         for (size_t z = 0; z < sizeof VN_REACH / sizeof VN_REACH[0]; z++) {
             Composed cand = out;
-            { PerfScope ps_(&g_perf.y[6]); g_perf.yn[6]++;
-              vn_cse(cand.bc, cand.ct, fragment, cand.vn, VN_REACH[z]); }
+            vn_cse<I>(cand.bc, cand.ct, fragment, cand.vn, VN_REACH[z]);
             if (!cand.vn.rounds) break;
             if (!base_done) {
                 base = out;
-                compose_tail(fragment, base);
+                compose_tail<I>(fragment, base);
                 base_done = true;
-                g_vn_rows++;
                 g_vn_row = -1;
             }
             const Composed stream = cand;
             const int wo = base.occ_floored ? 0
-                                            : occupancy_of(base.rst.new_decl);
-            compose_tail(fragment, cand, wo);
+                                            : I::occupancy_of(base.rst.new_decl);
+            compose_tail<I>(fragment, cand, wo);
             bool win = !cand.occ_floored &&
                        (base.occ_floored ||
-                        (occupancy_of(cand.rst.new_decl) >= wo &&
-                         issue_cycles(cand.bc, const_off(cand.ct)) <=
-                             issue_cycles(base.bc, const_off(base.ct))));
+                        (I::occupancy_of(cand.rst.new_decl) >= wo &&
+                         I::issue_cycles(cand.bc, I::const_off(cand.ct)) <=
+                             I::issue_cycles(base.bc, I::const_off(base.ct))));
             if (win) {
                 out.bc = stream.bc; out.ct = stream.ct; out.vn = stream.vn;
                 ref = std::move(cand);
                 have_ref = true;
-                g_vn_kept++;
                 g_vn_row = (int)z;
-                if (z) g_vn_ladder++;
                 break;
             }
         }
@@ -476,7 +563,7 @@ static void compose_one_tail(bool fragment, Composed &out) {
                                       VnStats v = c.vn;
                                       c = ref; c.st = std::move(k);
                                       c.ac = a; c.vn = v; return; }
-        compose_tail(fragment, c);
+        compose_tail<I>(fragment, c);
     };
 
     if (g_anticopy) {
@@ -489,21 +576,13 @@ static void compose_one_tail(bool fragment, Composed &out) {
                 AnticopyStats s1;
                 std::vector<u8> keep_bc = alt.bc, keep_ct = alt.ct;
                 try {
-                    PerfScope ps_(&g_perf.y[0]); g_perf.yn[0]++;
-                    anticopy(alt.bc, alt.ct, fragment, s1);
+                    anticopy<I>(alt.bc, alt.ct, fragment, s1);
                 } catch (const std::exception &e) {
 
                     alt.bc.swap(keep_bc); alt.ct.swap(keep_ct);
                     s1 = AnticopyStats();
-                    g_ac_declined++;
                 }
-                alt.ac.sites += s1.sites;
                 alt.ac.applied += s1.applied;
-                alt.ac.copies += s1.copies;
-                alt.ac.skip_shape += s1.skip_shape;
-                alt.ac.skip_reg += s1.skip_reg;
-                alt.ac.skip_cfg += s1.skip_cfg;
-                alt.ac.trimmed += s1.trimmed;
                 if (!s1.applied) break;
             }
             g_ac_budget = -1;
@@ -512,24 +591,17 @@ static void compose_one_tail(bool fragment, Composed &out) {
         Composed alt;
         run(budget, alt);
         if (alt.ac.applied == 0) { out.ac = alt.ac; tail_of(out); return; }
-        if (g_anticopy_force) {
-            compose_tail(fragment, alt);
-            g_ac_rows++;
-            out = std::move(alt); g_ac_kept++; return;
-        }
 
         tail_of(out);
-        g_ac_rows++;
-        const int wo = occupancy_of(out.rst.new_decl);
-        const int cb = issue_cycles(out.bc, const_off(out.ct));
-        compose_tail(fragment, alt, wo);
+        const int wo = I::occupancy_of(out.rst.new_decl);
+        const int cb = I::issue_cycles(out.bc, I::const_off(out.ct));
+        compose_tail<I>(fragment, alt, wo);
 
         long long applied = alt.ac.applied;
         for (int step = 0; ; step++) {
-            const int wa = alt.occ_floored ? -1 : occupancy_of(alt.rst.new_decl);
-            if (wa >= wo && issue_cycles(alt.bc, const_off(alt.ct)) < cb) {
-                out = std::move(alt); g_ac_kept++;
-                if (step) g_ac_ladder++;
+            const int wa = alt.occ_floored ? -1 : I::occupancy_of(alt.rst.new_decl);
+            if (wa >= wo && I::issue_cycles(alt.bc, I::const_off(alt.ct)) < cb) {
+                out = std::move(alt);
                 return;
             }
             if (wa >= wo || step >= 3) break;
@@ -538,195 +610,166 @@ static void compose_one_tail(bool fragment, Composed &out) {
             Composed next;
             run(applied, next);
             if (next.ac.applied == 0) break;
-            compose_tail(fragment, next, wo);
+            compose_tail<I>(fragment, next, wo);
             alt = std::move(next);
         }
-        out.ac.sites = alt.ac.sites;
         return;
     }
     tail_of(out);
 }
 
+template <class I>
 static void renumber_sink(std::vector<u8> &bc, std::vector<u8> &ct, bool fragment,
                           RegStats &st, int need_warps, SinkStats &ss) {
-    if (!g_sink) {
-        renumber(bc, ct, fragment,   true, st, need_warps);
-        return;
-    }
     std::vector<u8> s_bc = bc, s_ct = ct;
     SinkStats s1;
-    { PerfScope ps_(&g_perf.x[29]); g_perf.xn[29]++; sink_cheap(s_bc, s_ct, fragment, s1); }
-    ss.cands += s1.cands; ss.moved += s1.moved; ss.slots += s1.slots;
-    ss.r_shape = s1.r_shape; ss.r_loop = s1.r_loop; ss.r_nodom = s1.r_nodom;
-    ss.r_near = s1.r_near; ss.r_clob = s1.r_clob; ss.r_nocross = s1.r_nocross;
-    ss.r_ext = s1.r_ext;
+    sink_cheap<I>(s_bc, s_ct, fragment, s1);
+    ss.moved += s1.moved;
     if (!s1.moved) {
-        renumber(bc, ct, fragment,   true, st, need_warps);
+        renumber<I>(bc, ct, fragment,   true, st, need_warps);
         return;
     }
     RegStats rs;
-    renumber(s_bc, s_ct, fragment,   true, rs, need_warps);
+    renumber<I>(s_bc, s_ct, fragment,   true, rs, need_warps);
 
     const bool bound_wins = !rs.floored && s1.maxlive0 > 0 &&
-                            occupancy_of(rs.new_decl) > occupancy_of(s1.maxlive0);
+                            I::occupancy_of(rs.new_decl) > I::occupancy_of(s1.maxlive0);
     bool keep = true;
-    if (bound_wins) {
-    } else {
-        renumber(bc, ct, fragment,   true, st, need_warps);
+    if (!bound_wins) {
+        renumber<I>(bc, ct, fragment,   true, st, need_warps);
         if (rs.floored && st.floored) return;
         if (rs.floored) keep = false;
         else if (st.floored) keep = true;
         else {
-            int wa = occupancy_of(rs.new_decl), wb = occupancy_of(st.new_decl);
+
+            int wa = I::occupancy_of(rs.new_decl), wb = I::occupancy_of(st.new_decl);
             keep = wa > wb ||
-                   (wa == wb && issue_cycles(s_bc, const_off(s_ct)) <=
-                                    issue_cycles(bc, const_off(ct)));
+                   (wa == wb && I::early_cycles() &&
+                    I::issue_cycles(s_bc, I::const_off(s_ct)) <=
+                        I::issue_cycles(bc, I::const_off(ct)));
+
+            if (wa == wb && !I::early_cycles() && st.rp_tuple && !rs.rp_tuple) keep = true;
         }
     }
 
-    if (keep) { bc.swap(s_bc); ct.swap(s_ct); st = rs; ss.kept++; }
-    else ss.reverted++;
+    if (keep) { bc.swap(s_bc); ct.swap(s_ct); st = rs; }
 }
 
+template <class I>
 static void compose_tail_inner(bool fragment, Composed &out, int need_warps);
+template <class I>
 static void compose_tail(bool fragment, Composed &out, int need_warps) {
-    PerfScope ps_(&g_perf.y[1]); g_perf.yn[1]++;
-    compose_tail_inner(fragment, out, need_warps);
+    compose_tail_inner<I>(fragment, out, need_warps);
 }
+template <class I>
 static void compose_tail_inner(bool fragment, Composed &out, int need_warps) {
 
-    if (g_dce2_early) {
-        Dce2Stats e;
-        dce2(out.bc, out.ct, fragment, e,   false);
-        out.dce.dead += e.dead; out.dce.self += e.self;
-    }
-    if (g_reorder || g_reorder_nomem || g_fill) {
+    if (g_reorder || g_fill) {
         out.pre_bc = out.bc;
         out.pre_ct = out.ct;
         out.has_pre = true;
-        if (g_reorder || g_reorder_nomem) {
-            PerfScope ps_(&g_perf.t_reorder);
-            reorder(out.bc, out.ct, out.ro, !g_reorder_nomem);
+        if (g_reorder) {
+            I::reorder(out.bc, out.ct, true);
         }
 
     }
     if (g_fill && !g_quick) {
 
         std::vector<u8> nf_bc = out.bc, nf_ct = out.ct;
-        ReorderStats fs;
-        { PerfScope ps_(&g_perf.t_fill);
-          fill_bubbles(out.bc, out.ct, fs, !g_reorder_nomem, g_fill_rounds); }
-        out.ro.fill_moved = fs.fill_moved;
-        out.ro.fill_rounds = fs.fill_rounds;
-        out.ro.fill_before = fs.fill_before;
-        out.ro.fill_after = fs.fill_after;
-        out.ro.v11_violations |= fs.v11_violations;
+        I::fill_bubbles(out.bc, out.ct, true, g_fill_rounds);
 
         std::vector<u8> a_bc = out.bc, a_ct = out.ct;
         RegStats ra;
-        { PerfScope ps_(&g_perf.t_renumber); g_perf.n_renumber++;
-          renumber_sink(a_bc, a_ct, fragment, ra, need_warps, out.sk); }
+        renumber_sink<I>(a_bc, a_ct, fragment, ra, need_warps, out.sk);
 
         RegStats rb;
-        { PerfScope ps_(&g_perf.t_renumber); g_perf.n_renumber++;
-          renumber_sink(nf_bc, nf_ct, fragment, rb,
-                        ra.floored ? need_warps : occupancy_of(ra.new_decl), out.sk); }
+        renumber_sink<I>(nf_bc, nf_ct, fragment, rb,
+                      ra.floored ? need_warps : I::occupancy_of(ra.new_decl), out.sk);
         if (ra.floored && rb.floored) { out.occ_floored = true; return; }
 
         bool keep = false;
         if (!ra.floored) {
-            u32 co_a = const_off(a_ct), co_b = const_off(nf_ct);
+            u32 co_a = I::const_off(a_ct), co_b = I::const_off(nf_ct);
             keep = rb.floored ||
-                   (occupancy_of(ra.new_decl) >= occupancy_of(rb.new_decl) &&
-                    issue_cycles(a_bc, co_a) <= issue_cycles(nf_bc, co_b));
+                   (I::occupancy_of(ra.new_decl) >= I::occupancy_of(rb.new_decl) &&
+                    I::issue_cycles(a_bc, co_a) <= I::issue_cycles(nf_bc, co_b));
         }
         if (keep) {
             out.bc.swap(a_bc); out.ct.swap(a_ct); out.rst = ra;
         } else {
             out.bc.swap(nf_bc); out.ct.swap(nf_ct); out.rst = rb;
-            out.ro.fill_reverted = 1;
         }
     } else {
-        if (g_fill) { PerfScope ps_(&g_perf.t_fill);
-            fill_bubbles(out.bc, out.ct, out.ro, !g_reorder_nomem,
-                         g_fill_rounds); }
-        {
-            PerfScope ps_(&g_perf.t_renumber); g_perf.n_renumber++;
-            renumber_sink(out.bc, out.ct, fragment, out.rst, need_warps, out.sk);
-            if (out.rst.floored) { out.occ_floored = true; return; }
-        }
+        if (g_fill) I::fill_bubbles(out.bc, out.ct, true, g_fill_rounds);
+        renumber_sink<I>(out.bc, out.ct, fragment, out.rst, need_warps, out.sk);
+        if (out.rst.floored) { out.occ_floored = true; return; }
     }
 
     if (g_reorder2) {
-        ReorderStats r2;
         std::vector<u8> r_bc = out.bc, r_ct = out.ct;
-        reorder(r_bc, r_ct, r2, !g_reorder_nomem);
-        if (issue_cycles(r_bc, const_off(r_ct)) <=
-            issue_cycles(out.bc, const_off(out.ct))) {
+        I::reorder(r_bc, r_ct, true);
+        if (I::issue_cycles(r_bc, I::const_off(r_ct)) <=
+            I::issue_cycles(out.bc, I::const_off(out.ct))) {
             out.bc.swap(r_bc);
             out.ct.swap(r_ct);
-            out.ro.moved += r2.moved;
-            out.ro.v11_violations |= r2.v11_violations;
         }
     }
 
-    if (g_dce2) { PerfScope ps_(&g_perf.y[3]); g_perf.yn[3]++;
-        dce2(out.bc, out.ct, fragment, out.dce); }
-    {
-        PerfScope ps_(&g_perf.t_control);
-        control_rewrite(out.bc, out.ct, out.facts);
-    }
+    dce2<I>(out.bc, out.ct, fragment);
+    I::control_rewrite(out.bc, out.ct, out.facts);
 
-    if (g_texnarrow) { PerfScope ps_(&g_perf.y[4]); g_perf.yn[4]++;
-        texnarrow(out.bc, out.ct, fragment, out.tn); }
+    if (g_texnarrow) {
+        texnarrow<I>(out.bc, out.ct, fragment, out.tn);
+    }
 }
 
+template <class I>
 static void compose_cp(DataSet &D, bool fragment, const std::string &uber_key,
                        const std::vector<u32> &c6, const std::string &name,
                        Composed &out) {
-    g_perf.n_compose_cp++;
     if (!g_copyprop) {
-        compose_one(D, fragment, uber_key, c6, name, out);
+        compose_one<I>(D, fragment, uber_key, c6, name, out);
         return;
     }
     Composed with, without;
-    compose_one(D, fragment, uber_key, c6, name, with);
+    compose_one<I>(D, fragment, uber_key, c6, name, with);
     g_copyprop = false;
-    compose_one(D, fragment, uber_key, c6, name, without);
+    compose_one<I>(D, fragment, uber_key, c6, name, without);
     g_copyprop = true;
 
     u32 ca, cb;
-    ca = const_off(with.ct);
-    cb = const_off(without.ct);
-    bool keep = occupancy_of(with.rst.new_decl) >=
-                    occupancy_of(without.rst.new_decl) &&
-                issue_cycles(with.bc, ca) <= issue_cycles(without.bc, cb);
-    CopyStats cp = with.st.cp;
+    ca = I::const_off(with.ct);
+    cb = I::const_off(without.ct);
+    bool keep = I::occupancy_of(with.rst.new_decl) >=
+                    I::occupancy_of(without.rst.new_decl) &&
+                I::issue_cycles(with.bc, ca) <= I::issue_cycles(without.bc, cb);
+
+    if (I::occupancy_first())
+        keep = I::occupancy_of(with.rst.new_decl) > I::occupancy_of(without.rst.new_decl) ||
+               (I::occupancy_of(with.rst.new_decl) == I::occupancy_of(without.rst.new_decl) &&
+                I::issue_cycles(with.bc, ca) <= I::issue_cycles(without.bc, cb));
     out = keep ? std::move(with) : std::move(without);
-    if (!keep) { out.st.cp = cp; out.st.cp.reverted = 1; }
 }
 
-int g_lm_pick_promote = 0, g_lm_pick_compact = 0, g_lm_pick_off = 0;
-int g_lm_pick_cp = 0;
-
+template <class I>
 static bool cheaper(const Composed &a, const Composed &b) {
-    int wa = occupancy_of(a.rst.new_decl), wb = occupancy_of(b.rst.new_decl);
+    int wa = I::occupancy_of(a.rst.new_decl), wb = I::occupancy_of(b.rst.new_decl);
     if (wa != wb) return wa > wb;
-    u32 ca = const_off(a.ct), cb = const_off(b.ct);
-    int ya = issue_cycles(a.bc, ca), yb = issue_cycles(b.bc, cb);
+    u32 ca = I::const_off(a.ct), cb = I::const_off(b.ct);
+    int ya = I::issue_cycles(a.bc, ca), yb = I::issue_cycles(b.bc, cb);
     if (ya != yb) return ya < yb;
     return a.facts.n_real < b.facts.n_real;
 }
 
+template <class I>
 static void compose_lm(DataSet &D, bool fragment, const std::string &uber_key,
                     const std::vector<u32> &c6, const std::string &name,
                     Composed &out) {
-    g_perf.n_compose_lm++;
-    struct Rung { bool promote, compact; int *pick; };
+    struct Rung { bool promote, compact; };
     static const Rung rungs[] = {
-        { true,  false, &g_lm_pick_promote },
-        { false, true,  &g_lm_pick_compact },
-        { false, false, &g_lm_pick_off     },
+        { true,  false },
+        { false, true  },
+        { false, false },
     };
     bool want_cp = g_lmem_copyprop;
     for (const Rung &r : rungs) {
@@ -734,165 +777,52 @@ static void compose_lm(DataSet &D, bool fragment, const std::string &uber_key,
         g_lmem_compact = r.compact;
 
         Composed best;
-        bool have = false, took_cp = false;
+        bool have = false;
         std::exception_ptr err;
         for (int v = (r.promote && want_cp) ? 1 : 0; v >= 0; v--) {
             g_lmem_copyprop = (v != 0);
             Composed c;
             try {
-                compose_cp(D, fragment, uber_key, c6, name, c);
+                compose_cp<I>(D, fragment, uber_key, c6, name, c);
             } catch (const std::exception &) {
                 if (!err) err = std::current_exception();
                 continue;
             }
-            if (!have || cheaper(c, best)) {
-                best = std::move(c); have = true; took_cp = (v != 0);
+            if (!have || cheaper<I>(c, best)) {
+                best = std::move(c); have = true;
             }
         }
         g_lmem_copyprop = want_cp;
         if (!have) {
 
-            if (r.pick != &g_lm_pick_off) continue;
+            if (r.promote || r.compact) continue;
             g_lmem_promote = g_lmem_compact = true;
             std::rethrow_exception(err);
         }
-        (*r.pick)++;
-        if (took_cp) g_lm_pick_cp++;
         g_lmem_promote = g_lmem_compact = true;
         out = std::move(best);
         return;
     }
 }
 
-static int cycles_of_c(const Composed &c) {
-    u32 co = const_off(c.ct);
-    return issue_cycles(c.bc, co);
-}
-static bool better_c(const Composed &a, const Composed &b) {
-    int wa = occupancy_of(a.rst.new_decl), wb = occupancy_of(b.rst.new_decl);
-    if (wa != wb) return wa > wb;
-    int ya = cycles_of_c(a), yb = cycles_of_c(b);
-    if (ya != yb) return ya < yb;
-    return a.facts.n_real < b.facts.n_real;
-}
-
-bool g_cbfold_force = true;
-bool g_cse_force    = true;
-bool g_idfold_force = true;
-bool g_fmac_force   = true;
-
-int g_alg_cb_kept = 0, g_alg_cse_kept = 0, g_alg_id_kept = 0, g_alg_fm_kept = 0;
-int g_alg_base = 0, g_alg_rows = 0;
-
-struct AlgCounters { int lmp, lmc, lmo, lmcp, rpo, rpk, rpocc; };
-static AlgCounters alg_snap() {
-    return {g_lm_pick_promote, g_lm_pick_compact, g_lm_pick_off, g_lm_pick_cp,
-            g_rp_offered_n, g_rp_kept_n, g_rp_occ_n};
-}
-static void alg_restore(const AlgCounters &c) {
-    g_lm_pick_promote = c.lmp; g_lm_pick_compact = c.lmc;
-    g_lm_pick_off = c.lmo;     g_lm_pick_cp = c.lmcp;
-    g_rp_offered_n = c.rpo;    g_rp_kept_n = c.rpk;  g_rp_occ_n = c.rpocc;
-}
-
+template <class I = Sm50>
 static void compose(DataSet &D, bool fragment, const std::string &uber_key,
                     const std::vector<u32> &c6, const std::string &name,
                     Composed &out) {
-    g_perf.n_compose_top++;
 
-    renumber_cache_clear();
-    fill_cache_clear();
-    run3_cache_clear();
-    tail_cache_clear();
+    renumber_cache_clear<I>();
+    I::sched_cache_clear();
+    run3_cache_clear<I>();
+    tail_cache_clear<I>();
     g_vn_row = -2;
 
     if (g_quick) {
         g_vn_inline = true;
-        compose_one(D, fragment, uber_key, c6, name, out);
+        compose_one<I>(D, fragment, uber_key, c6, name, out);
         g_vn_inline = false;
         return;
     }
-    bool want[3] = {g_cbfold, g_cse_mov32i, g_idfold};
-    bool forced[3] = {g_cbfold_force, g_cse_force, g_idfold_force};
-    bool g[3];
-    int nguard = 0;
-    for (int t = 0; t < 3; t++) { g[t] = want[t] && !forced[t]; nguard += g[t]; }
-
-    bool fm_want = g_fmac, fm_guard = g_fmac && !g_fmac_force;
-    if (!nguard && !fm_guard) {
-        compose_lm(D, fragment, uber_key, c6, name, out);
-        return;
-    }
-    if (fm_guard) g_fmac = false;
-    auto setflags = [&](int m) {
-        bool v[3];
-        for (int t = 0; t < 3; t++) v[t] = g[t] ? ((m >> t) & 1) != 0 : want[t];
-        g_cbfold = v[0]; g_cse_mov32i = v[1]; g_idfold = v[2];
-    };
-
-    AlgCounters c0 = alg_snap();
-    setflags(0);
-    Composed base;
-    compose_lm(D, fragment, uber_key, c6, name, base);
-    AlgCounters cbase = alg_snap();
-    int base_cyc = cycles_of_c(base), base_warps = occupancy_of(base.rst.new_decl);
-
-    Composed best; bool have = false; int bestm = 0;
-    AlgCounters cbest = cbase;
-    for (int m = 1; m < 8; m++) {
-        bool skip = false;
-        for (int t = 0; t < 3; t++) if (((m >> t) & 1) && !g[t]) skip = true;
-        if (skip) continue;
-        alg_restore(c0);
-        setflags(m);
-        Composed c;
-        try {
-            compose_lm(D, fragment, uber_key, c6, name, c);
-        } catch (const std::exception &) { continue; }
-
-        int w = occupancy_of(c.rst.new_decl), cy = cycles_of_c(c);
-        if (w < base_warps || (w == base_warps && cy > base_cyc)) continue;
-        if (!have || better_c(c, best)) {
-            best = std::move(c); have = true; bestm = m; cbest = alg_snap();
-        }
-    }
-    g_alg_rows++;
-    Composed chosen;
-    AlgCounters cchosen;
-    int chosenm = 0;
-    if (have) {
-        if (bestm & 1) g_alg_cb_kept++;
-        if (bestm & 2) g_alg_cse_kept++;
-        if (bestm & 4) g_alg_id_kept++;
-        chosen = std::move(best); cchosen = cbest; chosenm = bestm;
-    } else {
-        g_alg_base++;
-        chosen = std::move(base); cchosen = cbase; chosenm = 0;
-    }
-
-    if (fm_guard) {
-        int cw = occupancy_of(chosen.rst.new_decl), cy0 = cycles_of_c(chosen);
-        alg_restore(c0);
-        setflags(chosenm);
-        g_fmac = true;
-        Composed c;
-        bool okc = true;
-        try {
-            compose_lm(D, fragment, uber_key, c6, name, c);
-        } catch (const std::exception &) { okc = false; }
-        g_fmac = false;
-        if (okc) {
-            int w = occupancy_of(c.rst.new_decl), cy = cycles_of_c(c);
-            if (!(w < cw || (w == cw && cy > cy0)) && better_c(c, chosen)) {
-                chosen = std::move(c); cchosen = alg_snap(); g_alg_fm_kept++;
-            }
-        }
-    }
-
-    g_cbfold = want[0]; g_cse_mov32i = want[1]; g_idfold = want[2];
-    g_fmac = fm_want;
-    alg_restore(cchosen);
-    out = std::move(chosen);
+    compose_lm<I>(D, fragment, uber_key, c6, name, out);
 }
 
 static void write_pair(const std::string &dir, const std::string &name,
@@ -902,55 +832,24 @@ static void write_pair(const std::string &dir, const std::string &name,
     spit(dir + "/" + name + "_control.bin", c.ct);
 }
 
+template <class I>
 static std::string content_name(const std::vector<u8> &bc) {
-    if (bc.size() <= (size_t)SPH_OFF)
+    const size_t from = I::program_start();
+    if (bc.size() <= from)
         fail("the emitted bytecode is %zu bytes, which is not a program to "
              "name", bc.size());
     char h[17];
     snprintf(h, sizeof h, "%016llx",
-             (unsigned long long)xxh3_64(bc.data() + SPH_OFF,
-                                         bc.size() - (size_t)SPH_OFF));
+             (unsigned long long)xxh3_64(bc.data() + from, bc.size() - from));
     return std::string(h);
 }
-
-
-
-
 
 struct ProfRec {
     int cycles = 0, instrs = 0, temp = 0, warps = 0;
 
-    long long weight = 0;
-    int ipa_dup = 0;
     u32 lmem = 0;
     size_t bytes = 0;
-
-    int maxlive = 0, over48 = 0, over56 = 0, nnames = 0, nwebs = 0;
 };
-
-static bool g_press = false;
-
-struct StallRec {
-    long long n = 0, cyc = 0, npair = 0, nwait = 0, cycwait = 0;
-    long long nsetw = 0, nsetr = 0, nreuse = 0, nbank = 0, sbank = 0;
-    long long cycfloor = 0;
-};
-
-struct ChainRec {
-    long long stallhist[32] = {0};
-    long long dist[65] = {0};
-    long long ndist = 0, sumdist = 0;
-    long long nodef = 0;
-    long long nslots = 0;
-};
-
-
-
-
-
-
-
-
 
 static void profile_pair(const std::vector<u8> &bc, const std::vector<u8> &ct,
                          ProfRec &p) {
@@ -962,38 +861,15 @@ static void profile_pair(const std::vector<u8> &bc, const std::vector<u8> &ct,
     CtlFacts f;
     control_facts(bc, ct, f);
     p.instrs = f.n_real;
-    p.weight = f.rate_weight;
-    p.ipa_dup = f.ipa_redundant;
     const NVNshaderControl *c = ctl(ct);
     p.temp = (int)c->mProgramRegNum;
     p.lmem = c->mPerWarpScratchSize;
 
     p.warps = occupancy_of(p.temp);
     p.bytes = bc.size();
-    if (g_press) {
-        PressFacts pf;
-        pressure_facts(bc, ct, pf);
-        p.maxlive = pf.maxlive; p.over48 = pf.over48; p.over56 = pf.over56;
-        p.nnames = pf.nnames; p.nwebs = pf.nwebs;
-    }
 }
 
-
-
-
-
-
-
-
-
-
-extern "C" int ub_slot_du(const unsigned char *bc, unsigned int constOff,
-                          unsigned char *out, int stride, int *opout, int maxn);
-
-
-
-
-
+template <class I>
 static void report_unexpressed(const DataSet &D,
                                const std::map<std::string, std::string> &all,
                                bool fragment, const std::string &uber_key) {
@@ -1015,7 +891,7 @@ static void report_unexpressed(const DataSet &D,
             (size_t)rec.default_choice_idx < rec.choice_names.size() &&
             rec.choice_names[(size_t)rec.default_choice_idx] == pr.second)
             continue;
-        switch (option_reach(D, fragment, uber_key, pr.first)) {
+        switch (option_reach<I>(D, fragment, uber_key, pr.first)) {
         case REACH_OK:
             break;
         case REACH_NO_SLOT:
@@ -1039,6 +915,7 @@ static void report_unexpressed(const DataSet &D,
     }
 }
 
+template <class I>
 static int cmd_native(DataSet &D, bool fragment,
                       const std::string &optfile, const std::string &outdir,
                       const std::string &name, bool gate) {
@@ -1061,7 +938,7 @@ static int cmd_native(DataSet &D, bool fragment,
     std::string uber = fragment ? std::string()
                                 : (all.count("gsys_weight") ? all["gsys_weight"]
                                                             : std::string());
-    report_unexpressed(D, all, fragment, uber);
+    report_unexpressed<I>(D, all, fragment, uber);
 
     std::map<std::string, std::string> ov;
     for (auto &pr : all) {
@@ -1075,9 +952,9 @@ static int cmd_native(DataSet &D, bool fragment,
     std::vector<u32> c6 = D.build_c6(ov, nullptr);
 
     Composed c;
-    compose(D, fragment, uber, c6, name, c);
+    compose<I>(D, fragment, uber, c6, name, c);
 
-    const std::string out_name = name.empty() ? content_name(c.bc) : name;
+    const std::string out_name = name.empty() ? content_name<I>(c.bc) : name;
     write_pair(outdir, out_name, c);
 
     if (name.empty())
@@ -1087,36 +964,41 @@ static int cmd_native(DataSet &D, bool fragment,
     if (!gate) return 0;
 
     GateResult R;
-    verify(c.bc, c.ct,   true, R, nullptr, nullptr,
+    I::verify(c.bc, c.ct,   true, R, nullptr, nullptr,
            c.has_pre ? &c.pre_bc : nullptr, c.has_pre ? &c.pre_ct : nullptr);
     for (auto &r : R.rows)
         printf("  %-14s %-4s  %s\n", std::get<0>(r).c_str(),
                std::get<1>(r) ? "PASS" : "FAIL", std::get<2>(r).c_str());
-    u32 co = const_off(c.ct);
+    u32 co = I::const_off(c.ct);
     printf("%-30s instrs %5d  cycles %6d  temp %3d  warps %2d  lmem %6u  "
-           "bytes %6zu  weight %6lld  ipadup %3d%s\n",
-           out_name.c_str(), c.st.n_emit, issue_cycles(c.bc, co),
-           c.facts.gpr_count, occupancy_of(c.facts.gpr_count),
+           "bytes %6zu  weight %6lld  ipadup %3d\n",
+           out_name.c_str(), c.st.n_emit, I::issue_cycles(c.bc, co),
+           c.facts.gpr_count, I::occupancy_of(c.facts.gpr_count),
            c.facts.lmem_bytes, c.bc.size(), c.facts.rate_weight,
-           c.facts.ipa_redundant,
-           c.ro.v11_violations ? "  V11 VIOLATED" : "");
-    if (g_press)
-        printf("press: maxlive %d decl %d  copies cand %d merged %d already %d "
-               "pred %d constr %d nogpr %d interf %d clash %d pin %d  "
-               "lm cand %d merged %d elided %d  id cand %d merged %d  "
-               "coal pairs %lld hits %lld  sink cand %d moved %d slots %lld "
-               "kept %d reverted %d  last round: shape %d loop %d nodom %d "
-               "near %d clob %d nocross %d ext %d\n",
-               c.rst.maxlive, c.rst.new_decl, c.st.cp.cands, c.st.cp.merged,
-               c.st.cp.already, c.st.cp.rej_pred, c.st.cp.rej_constrained,
-               c.st.cp.rej_nogpr, c.st.cp.rej_interfere, c.st.cp.rej_clash,
-               c.st.cp.pin_kept, c.st.cp.lm_cands, c.st.cp.lm_merged,
-               c.st.cp.lm_elided, c.st.cp.id_cands, c.st.cp.id_merged,
-               g_coal_pairs, g_coal_hits, c.sk.cands, c.sk.moved, c.sk.slots,
-               c.sk.kept, c.sk.reverted, c.sk.r_shape, c.sk.r_loop,
-               c.sk.r_nodom, c.sk.r_near, c.sk.r_clob, c.sk.r_nocross,
-               c.sk.r_ext);
+           c.facts.ipa_redundant);
     return R.nbad();
+}
+
+static int cmd_gate_sm86(const std::string &bcp, const std::string &ctp) {
+    std::vector<u8> bc = read_file(bcp), ct = read_file(ctp);
+    GateResult R;
+    Sm86::verify(bc, ct, true, R, nullptr, nullptr, nullptr, nullptr);
+    for (auto &r : R.rows)
+        printf("%-14s %s  %s\n", std::get<0>(r).c_str(),
+               std::get<1>(r) ? "PASS" : "FAIL", std::get<2>(r).c_str());
+    u32 co = Sm86::const_off(ct);
+    int n = 0;
+    for (u32 off = 0x80; off + 16 <= co; off += 16) {
+        Sm86::Word w;
+        std::memcpy(&w.lo, bc.data() + off, 8);
+        std::memcpy(&w.hi, bc.data() + off + 8, 8);
+        if (w.lo || w.hi) n++;
+    }
+    printf("profile        instrs %5d  cycles %6d  temp %3d  warps %2d  "
+           "bytes %6zu\n",
+           n, Sm86::issue_cycles(bc, co), (int)Sm86::reg_count(ct),
+           Sm86::occupancy_of((int)Sm86::reg_count(ct)), bc.size());
+    return R.nbad() ? 1 : 0;
 }
 
 static int cmd_gate(const std::string &bcp, const std::string &ctp,
@@ -1136,51 +1018,8 @@ static int cmd_gate(const std::string &bcp, const std::string &ctp,
     printf("profile        instrs %5d  cycles %6d  temp %3d  warps %2d  "
            "lmem %6u  bytes %6zu\n",
            p.instrs, p.cycles, p.temp, p.warps, p.lmem, p.bytes);
-    if (g_press) {
-        PressFacts pf;
-        pressure_facts(bc, ct, pf);
-        printf("press          maxlive %3d  over48 %5d  over56 %5d  of %5d  "
-               "names %3d  webs %4d  mov_rr %3d  srcdead %3d  srclive %3d\n",
-               pf.maxlive, pf.over48, pf.over56, pf.npts, pf.nnames, pf.nwebs,
-               pf.mov_rr, pf.mov_srcdead, pf.mov_srclive);
-    }
     return R.nbad() ? 1 : 0;
 }
-
-
-struct ShipFlag { const char *name; bool *flag; bool dflt; };
-static const ShipFlag g_ship_flags[] = {
-    { "reorder",       &g_reorder,       true  },
-    { "fill",          &g_fill,          true  },
-    { "copyprop",      &g_copyprop,      true  },
-    { "rp-split",      &g_rp_split,      true  },
-    { "rp-defrelax",   &g_rp_defrelax,   true  },
-    { "idfold",        &g_idfold,        true  },
-    { "cse-mov32i",    &g_cse_mov32i,    true  },
-    { "cbfold",        &g_cbfold,        true  },
-    { "fmac",          &g_fmac,          true  },
-    { "bank",          &g_bank,          true  },
-    { "anti",          &g_anti,          true  },
-
-    { "dce2",          &g_dce2,          true  },
-
-    { "anticopy",      &g_anticopy,      true  },
-
-    { "coal",          &g_coal,          true  },
-
-    { "sink",          &g_sink,          true  },
-
-    { "imap-trim",     &g_imap_trim,     true  },
-
-    { "texnarrow",     &g_texnarrow,     true  },
-
-    { "vn",            &g_vn,            true  },
-
-    { "reorder2",      &g_reorder2,      true  },
-
-    { "texsb",         &g_texsb,         true  },
-};
-
 
 static const char kUsage[] =
     "usage:\n"
@@ -1201,13 +1040,15 @@ static const char kUsage[] =
     "  --options-table <options.json>             option -> option-buffer slot\n"
     "  --option-bank N                  the constant bank this stage binds the\n"
     "                                   option block to\n"
+    "  --mode nvn|nvn2                  the GPU the inputs are for; read from\n"
+    "                                   their control section when absent\n"
     "\n";
 static int run(int argc, char **argv) {
-    std::string arg_optfile, arg_out, arg_name, arg_data;
-    std::string arg_rows, arg_table, arg_csv;
+    std::string arg_optfile, arg_out, arg_name, arg_table;
     std::string cmd;
     std::vector<UberArg> uargs;
     int arg_bank = -1;
+    IsaId arg_mode = IsaId::None;
     bool gate = false;
 
     std::vector<std::string> pos;
@@ -1236,14 +1077,9 @@ static int run(int argc, char **argv) {
         else if (a == "--option-bank-fragment") g_uber[1].bank = atoi(next().c_str());
         else if (a == "--option-bank-vertex") g_uber[0].bank = atoi(next().c_str());
 
-
-
-
-
-
-
         else if (a == "--gate") gate = true;
-                else if (a == "--quick") g_quick = true;
+        else if (a == "--quick") g_quick = true;
+        else if (a == "--mode") arg_mode = parse_mode(next());
         else if (a == "--level") {
 
             next();
@@ -1257,10 +1093,23 @@ static int run(int argc, char **argv) {
         printf("%u\n", UBERSPEC_CODEGEN_VER);
         return 0;
     }
+    if (cmd == "codegen-nvn2") {
+        printf("%u\n", UBERSPEC_CODEGEN_VER_NVN2);
+        return 0;
+    }
 
-    for (const ShipFlag &f : g_ship_flags) *f.flag = true;
-    if (g_pa_anti) uber_set_pa_anti(1);
+    g_reorder = g_fill = g_copyprop = g_idfold = g_cse_mov32i = g_cbfold = g_fmac = true;
+    g_bank = g_anticopy = g_texnarrow = g_vn = g_reorder2 = g_texsb = true;
 
+    std::string uwhere;
+    IsaId run_isa = uber_isa(uargs, arg_mode, uwhere);
+
+    if (run_isa == IsaId::Sm86) {
+        g_reorder = g_fill = g_anticopy = false;
+        g_vn = g_reorder2 = g_bank = g_texnarrow = false;
+        g_cbfold = g_fmac = g_idfold = g_cse_mov32i = g_texsb = false;
+        g_spill_max = 0;
+    }
 
     resolve_uber_args(uargs);
     if (arg_bank >= 0) {
@@ -1277,6 +1126,9 @@ static int run(int argc, char **argv) {
         if (pos.size() < 3)
             fail("gate needs <bytecode.bin> <control.bin> "
                  "[<ref_bytecode.bin> <ref_control.bin>]");
+        if (detect_isa(pos[1], pos[2], arg_mode) == IsaId::Sm86)
+            return cmd_gate_sm86(pos[1], pos[2]);
+        program_isa(pos[1], pos[2], arg_mode);
         return cmd_gate(pos[1], pos[2], pos.size() > 4 ? pos[3] : "",
                         pos.size() > 4 ? pos[4] : "");
     }
@@ -1287,8 +1139,7 @@ static int run(int argc, char **argv) {
     }
 
     DataSet D;
-    D.load(arg_data, arg_table);
-
+    D.load(arg_table);
 
     if (!arg_optfile.empty()) {
         if (arg_out.empty()) fail("--out is required");
@@ -1301,14 +1152,15 @@ static int run(int argc, char **argv) {
                  "to specialise - the stage is read out of it");
         bool fragment = hf;
         check_stage(stage_name(fragment));
-        return cmd_native(D, fragment, arg_optfile, arg_out, arg_name,
-                          gate) ? 1 : 0;
+        if (run_isa == IsaId::Sm86)
+            return cmd_native<Sm86>(D, fragment, arg_optfile, arg_out, arg_name,
+                                    gate) ? 1 : 0;
+        return cmd_native<Sm50>(D, fragment, arg_optfile, arg_out, arg_name,
+                                gate) ? 1 : 0;
     }
     fprintf(stderr, "%s", kUsage);
     return 1;
 }
-
-extern long long g_spill_ok, g_remat_ok;
 
 }
 
